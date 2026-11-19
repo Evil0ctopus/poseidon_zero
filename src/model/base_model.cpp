@@ -56,4 +56,16 @@ void BaseModel::move_menu_selection(int32_t delta) {
     set_menu_selection(menu_selection_ + delta);
 }
 
+int32_t BaseModel::tool_selection() const {
+    return tool_selection_;
+}
+
+void BaseModel::set_tool_selection(int32_t index) {
+    tool_selection_ = std::clamp(index, int32_t{0}, int32_t{4});
+}
+
+void BaseModel::move_tool_selection(int32_t delta) {
+    set_tool_selection(tool_selection_ + delta);
+}
+
 } // namespace model

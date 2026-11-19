@@ -24,7 +24,8 @@ BaseViewModel::BaseViewModel()
       bold_text_subject_(false),
       info_visible_subject_(false),
       quit_requested_subject_(false),
-      menu_selection_subject_(0) {}
+      menu_selection_subject_(0),
+      tool_selection_subject_(0) {}
 
 BaseViewModel::~BaseViewModel() = default;
 
@@ -62,6 +63,10 @@ lv_subject_t* BaseViewModel::quit_requested_subject() {
 
 lv_subject_t* BaseViewModel::menu_selection_subject() {
     return menu_selection_subject_.native();
+}
+
+lv_subject_t* BaseViewModel::tool_selection_subject() {
+    return tool_selection_subject_.native();
 }
 
 bool BaseViewModel::is_dark_mode() const {
@@ -160,6 +165,20 @@ void BaseViewModel::set_menu_selection(int32_t index) {
 void BaseViewModel::move_menu_selection(int32_t delta) {
     model_.move_menu_selection(delta);
     menu_selection_subject_.set(model_.menu_selection());
+}
+
+int32_t BaseViewModel::tool_selection() const {
+    return model_.tool_selection();
+}
+
+void BaseViewModel::set_tool_selection(int32_t index) {
+    model_.set_tool_selection(index);
+    tool_selection_subject_.set(model_.tool_selection());
+}
+
+void BaseViewModel::move_tool_selection(int32_t delta) {
+    model_.move_tool_selection(delta);
+    tool_selection_subject_.set(model_.tool_selection());
 }
 
 void BaseViewModel::publish_all() {

@@ -30,6 +30,7 @@ public:
     lv_subject_t* info_visible_subject();
     lv_subject_t* quit_requested_subject();
     lv_subject_t* menu_selection_subject();
+    lv_subject_t* tool_selection_subject();
 
     bool is_dark_mode() const;
     void set_dark_mode(bool enabled);
@@ -53,6 +54,9 @@ public:
     int32_t menu_selection() const;
     void set_menu_selection(int32_t index);
     void move_menu_selection(int32_t delta);
+    int32_t tool_selection() const;
+    void set_tool_selection(int32_t index);
+    void move_tool_selection(int32_t delta);
 
 private:
     void publish_all();
@@ -67,6 +71,7 @@ private:
     reactive::BoolSubject info_visible_subject_;
     reactive::BoolSubject quit_requested_subject_;
     reactive::IntSubject menu_selection_subject_;
+    reactive::IntSubject tool_selection_subject_;
 };
 
 } // namespace viewmodel

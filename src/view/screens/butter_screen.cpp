@@ -159,8 +159,11 @@ void ButterScreen::build_content(lv_obj_t* content) {
         tools[3] = "GATT  safe tools";
         tools[4] = "Radio  capability gate";
     }
-    for (const char* tool : tools) {
+    lv_obj_t* row_objects[5] = {};
+    for (int32_t index = 0; index < 5; ++index) {
+        const char* tool = tools[index];
         auto* row = lv_button_create(content);
+        row_objects[index] = row;
         lv_obj_remove_style_all(row);
         lv_obj_set_size(row, 270, 18);
         lv_obj_set_style_radius(row, 3, 0);
@@ -178,6 +181,12 @@ void ButterScreen::build_content(lv_obj_t* content) {
                                    0);
         lv_obj_align(label, LV_ALIGN_LEFT_MID, 0, 0);
         reactive::bind_theme(label, view_model().dark_mode_subject(), reactive::ThemeRole::Text);
+        lv_obj_set_style_border_color(
+            row,
+            index == view_model().tool_selection()
+                ? lv_color_hex(view::color::dark::kPrimary)
+                : lv_color_hex(view::color::dark::kBorder),
+            0);
     }
 }
 

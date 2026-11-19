@@ -171,6 +171,29 @@ private:
             }
         }
 
+        if (view_model_.current_page() != model::AppPage::Apple) {
+            if (key == LV_KEY_UP || key == 'f') {
+                if (!long_pressed) {
+                    view_model_.move_tool_selection(-1);
+                }
+                return true;
+            }
+            if (key == LV_KEY_DOWN || key == 'x') {
+                if (!long_pressed) {
+                    view_model_.move_tool_selection(1);
+                }
+                return true;
+            }
+            if (key == LV_KEY_ENTER) {
+                if (!long_pressed) {
+                    toast_->show("Module action requires confirmation",
+                                 view::widgets::ToastTone::Warning,
+                                 2200);
+                }
+                return true;
+            }
+        }
+
         if (key == platform::kKeyPrintScreen) {
             if (!long_pressed) {
                 const auto result = platform::screenshot::capture_active_screen();

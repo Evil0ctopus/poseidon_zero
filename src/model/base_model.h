@@ -37,11 +37,15 @@ public:
     int32_t menu_selection() const;
     void set_menu_selection(int32_t index);
     void move_menu_selection(int32_t delta);
+    int32_t tool_selection() const;
+    void set_tool_selection(int32_t index);
+    void move_tool_selection(int32_t delta);
 
 private:
     bool dark_mode_ = false;
     AppPage current_page_ = AppPage::Apple;
     int32_t menu_selection_ = 0;
+    int32_t tool_selection_ = 0;
 };
 
 } // namespace model
