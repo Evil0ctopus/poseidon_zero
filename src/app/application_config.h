@@ -12,6 +12,8 @@ namespace app {
 
 struct ApplicationConfig {
     bool dark_mode = false;
+    bool large_text = false;
+    bool reduced_motion = false;
 };
 
 bool load_application_config(const std::string& path,

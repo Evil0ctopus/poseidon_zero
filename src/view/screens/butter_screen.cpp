@@ -11,6 +11,7 @@
 #include "capabilities.h"
 #include "memory_status.h"
 #include "linux_network.h"
+#include "storage_status.h"
 #include "theme.h"
 #include "ui_const.h"
 #include <cstdio>
@@ -87,7 +88,7 @@ void ButterScreen::build_content(lv_obj_t* content) {
     const auto wifi = platform::read_capability(platform::Capability::Wifi);
     const auto bluetooth = platform::read_capability(platform::Capability::Bluetooth);
     const auto ethernet = platform::read_capability(platform::Capability::Ethernet);
-    const auto audio = platform::read_capability(platform::Capability::Audio);
+    const auto storage = platform::read_storage_status();
 
     char memory_text[64];
     if (memory.mem_available_kib >= 0 && memory.mem_total_kib >= 0) {
@@ -105,7 +106,7 @@ void ButterScreen::build_content(lv_obj_t* content) {
         tools[1] = wifi.present ? "Wi-Fi  available" : "Wi-Fi  unavailable";
         tools[2] = bluetooth.present ? "Bluetooth  available" : "Bluetooth  unavailable";
         tools[3] = ethernet.present ? "Ethernet  available" : "Ethernet  unavailable";
-        tools[4] = audio.present ? "Audio  available" : "Audio  unavailable";
+        tools[4] = storage.micro_sd_present ? "Storage  available" : "Storage  no card";
     } else if (view_model().current_page() == model::AppPage::Network) {
         const auto interfaces = platform::list_network_interfaces();
         tools[0] = interfaces.empty() ? "No network interfaces" : "Interfaces  available";
@@ -114,10 +115,7 @@ void ButterScreen::build_content(lv_obj_t* content) {
         tools[3] = "DNS  lookup";
         tools[4] = "Port  TCP scan";
     } else if (view_model().current_page() == model::AppPage::Wireless) {
-        const auto networks = platform::scan_wifi_networks();
-        char wifi_count[32];
-        std::snprintf(wifi_count, sizeof(wifi_count), "Wi-Fi  %zu networks", networks.size());
-        tools[0] = wifi_count;
+        tools[0] = wifi.present ? "Wi-Fi  available" : "Wi-Fi  unavailable";
         tools[1] = wifi.present ? "Signal  available" : "Signal  unavailable";
         tools[2] = bluetooth.present ? "BLE  available" : "BLE  unavailable";
         tools[3] = "GATT  safe tools";
