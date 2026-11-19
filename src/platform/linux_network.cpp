@@ -1,6 +1,7 @@
 #include "linux_network.h"
 
 #include <array>
+#include <cctype>
 #include <cstdio>
 #include <filesystem>
 #include <fstream>
@@ -25,6 +26,40 @@ std::vector<std::string> arp_entries() { return {"Desktop emulator"}; }
 #else
 namespace platform {
 namespace {
+
+bool valid_host_argument(const std::string& host) {
+    if (host.empty() || host.size() > 253) {
+        return false;
+    }
+
+    std::size_t label_length = 0;
+    bool previous_hyphen = false;
+    for (std::size_t index = 0; index < host.size(); ++index) {
+        const unsigned char character = static_cast<unsigned char>(host[index]);
+        if (character == '.') {
+            if (label_length == 0 || label_length > 63 || previous_hyphen) {
+                return false;
+            }
+            label_length = 0;
+            previous_hyphen = false;
+        }
+        else if (character == '-') {
+            if (label_length == 0) {
+                return false;
+            }
+            ++label_length;
+            previous_hyphen = true;
+        }
+        else if (std::isalnum(character)) {
+            ++label_length;
+            previous_hyphen = false;
+        }
+        else {
+            return false;
+        }
+    }
+    return label_length > 0 && label_length <= 63 && !previous_hyphen;
+}
 
 std::string run_command(const char* command) {
     std::array<char, 256> buffer{};
@@ -87,8 +122,7 @@ std::vector<WifiNetwork> scan_wifi_networks() {
 }
 
 std::string ping_host(const std::string& host) {
-    if (host.empty() || host.find_first_not_of("abcdefghijklmnopqrstuvwxyz"
-                                               "ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789.-") != std::string::npos) {
+    if (!valid_host_argument(host)) {
         return "Invalid host";
     }
     const std::string command = "timeout 5s ping -c 2 -W 2 \"" + host + "\" 2>&1";
@@ -96,8 +130,7 @@ std::string ping_host(const std::string& host) {
 }
 
 std::string dns_lookup(const std::string& host) {
-    if (host.empty() || host.find_first_not_of("abcdefghijklmnopqrstuvwxyz"
-                                               "ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789.-") != std::string::npos) {
+    if (!valid_host_argument(host)) {
         return "Invalid host";
     }
     const std::string command = "timeout 5s getent ahosts \"" + host + "\" 2>&1";

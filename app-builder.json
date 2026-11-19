@@ -16,7 +16,7 @@
     "license": "MIT",
     "source_repo": "https://github.com/Evil0ctopus/poseidon_zero",
     "author": { "github": "Evil0ctopus", "display_name": "Evil0ctopus" },
-    "share_code": "",
+    "share_code": "POSE",
     "permissions": {
       "camera": false,
       "microphone": false,

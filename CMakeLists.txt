@@ -643,4 +643,14 @@ if(USE_DESKTOP AND BUILD_TESTING)
             "${CMAKE_CURRENT_SOURCE_DIR}/src/platform"
     )
     add_test(NAME safe-tools COMMAND poseidon_safe_tools_tests)
+
+    add_executable(poseidon_model_navigation_tests
+        tests/model_navigation_test.cpp
+        src/model/base_model.cpp
+    )
+    target_include_directories(poseidon_model_navigation_tests
+        PRIVATE
+            "${CMAKE_CURRENT_SOURCE_DIR}/src/model"
+    )
+    add_test(NAME model-navigation COMMAND poseidon_model_navigation_tests)
 endif()

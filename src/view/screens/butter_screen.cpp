@@ -24,7 +24,7 @@ namespace screen {
 namespace {
 
 struct ToolSelectionBinding {
-    lv_obj_t* rows[5]{};
+    lv_obj_t* rows[8]{};
     viewmodel::BaseViewModel* view_model{nullptr};
 };
 
@@ -39,7 +39,7 @@ void tool_selection_observer(lv_observer_t* observer, lv_subject_t* subject) {
     }
 
     const int32_t selected = lv_subject_get_int(subject);
-    for (int32_t index = 0; index < 5; ++index) {
+    for (int32_t index = 0; index < 8; ++index) {
         if (!lv_obj_is_valid(binding->rows[index])) {
             continue;
         }
@@ -58,7 +58,7 @@ void tool_row_clicked(lv_event_t* event) {
         return;
     }
 
-    for (int32_t index = 0; index < 5; ++index) {
+    for (int32_t index = 0; index < 8; ++index) {
         if (binding->rows[index] == row) {
             binding->view_model->set_tool_selection(index);
             return;
@@ -81,11 +81,14 @@ void ButterScreen::build_content(lv_obj_t* content) {
 
     auto* heading = lv_label_create(content);
     const char* title = "SYSTEM TOOLS";
-    const char* tools[5] = {
-        "Display",
+    const char* tools[8] = {
         "Memory",
+        "Wi-Fi",
+        "Bluetooth",
+        "Ethernet",
         "Storage",
-        "Network",
+        "Battery",
+        "Clock",
         "Diagnostics",
     };
     char file_summary[40] = "Files";
@@ -98,8 +101,8 @@ void ButterScreen::build_content(lv_obj_t* content) {
             title = "NETWORK";
             {
                 const auto features = platform::network_features();
-                for (int32_t index = 0; index < 5; ++index) {
-                    tools[index] = features[index].available ? features[index].name : "Unavailable";
+                for (int32_t index = 0; index < 8; ++index) {
+                    tools[index] = features[index].name;
                 }
             }
             break;
@@ -107,8 +110,8 @@ void ButterScreen::build_content(lv_obj_t* content) {
             title = "WIRELESS";
             {
                 const auto features = platform::wireless_features();
-                for (int32_t index = 0; index < 5; ++index) {
-                    tools[index] = features[index].available ? features[index].name : "Unavailable";
+                for (int32_t index = 0; index < 8; ++index) {
+                    tools[index] = features[index].name;
                 }
             }
             break;
@@ -116,8 +119,8 @@ void ButterScreen::build_content(lv_obj_t* content) {
             title = "INFRARED";
             {
                 const auto features = platform::infrared_features();
-                for (int32_t index = 0; index < 5; ++index) {
-                    tools[index] = features[index].available ? features[index].name : "Unavailable";
+                for (int32_t index = 0; index < 8; ++index) {
+                    tools[index] = features[index].name;
                 }
             }
             break;
@@ -125,8 +128,8 @@ void ButterScreen::build_content(lv_obj_t* content) {
             title = "EXPANSION";
             {
                 const auto features = platform::expansion_features();
-                for (int32_t index = 0; index < 5; ++index) {
-                    tools[index] = features[index].available ? features[index].name : "Unavailable";
+                for (int32_t index = 0; index < 8; ++index) {
+                    tools[index] = features[index].name;
                 }
             }
             break;
@@ -134,8 +137,8 @@ void ButterScreen::build_content(lv_obj_t* content) {
             title = "TOOLS";
             {
                 const auto features = platform::tools_features();
-                for (int32_t index = 0; index < 5; ++index) {
-                    tools[index] = features[index].available ? features[index].name : "Unavailable";
+                for (int32_t index = 0; index < 8; ++index) {
+                    tools[index] = features[index].name;
                 }
                 const auto home = platform::list_directory("/home");
                 const auto media = platform::list_directory("/media");
@@ -193,8 +196,8 @@ void ButterScreen::build_content(lv_obj_t* content) {
             title = "MEDIA";
             {
                 const auto features = platform::media_features();
-                for (int32_t index = 0; index < 5; ++index) {
-                    tools[index] = features[index].available ? features[index].name : "Unavailable";
+                for (int32_t index = 0; index < 8; ++index) {
+                    tools[index] = features[index].name;
                 }
             }
             break;
@@ -232,6 +235,9 @@ void ButterScreen::build_content(lv_obj_t* content) {
         tools[2] = bluetooth.present ? "Bluetooth  available" : "Bluetooth  unavailable";
         tools[3] = ethernet.present ? "Ethernet  available" : "Ethernet  unavailable";
         tools[4] = storage.micro_sd_present ? "Storage  available" : "Storage  no card";
+        tools[5] = "Battery status";
+        tools[6] = "System clock";
+        tools[7] = "Support report";
     } else if (view_model().current_page() == model::AppPage::Network) {
         const auto interfaces = platform::list_network_interfaces();
         tools[0] = interfaces.empty() ? "No network interfaces" : "Interfaces  available";
@@ -241,48 +247,73 @@ void ButterScreen::build_content(lv_obj_t* content) {
                       "Gateway  %s",
                       gateway.c_str());
         tools[1] = gateway_summary;
-        tools[2] = "Ping  unavailable";
-        tools[3] = "DNS  unavailable";
+        tools[2] = "Ping  enter host";
+        tools[3] = "DNS  enter name";
         tools[4] = "Port scan  disabled";
+        tools[5] = "Ethernet status";
+        tools[6] = "ARP table";
+        tools[7] = "Support report";
     } else if (view_model().current_page() == model::AppPage::Wireless) {
         tools[0] = wifi.present ? "Wi-Fi  available" : "Wi-Fi  unavailable";
         tools[1] = wifi.present ? "Signal  available" : "Signal  unavailable";
         tools[2] = bluetooth.present ? "Bluetooth  available" : "Bluetooth  unavailable";
-        tools[3] = "GATT  unavailable";
-        tools[4] = "Radio tools  disabled";
+        tools[3] = "GATT";
+        tools[4] = "Tracker scan";
     }
-    lv_obj_t* row_objects[5] = {};
-    for (int32_t index = 0; index < 5; ++index) {
-        const char* tool = tools[index];
-        auto* row = lv_button_create(content);
-        row_objects[index] = row;
-        lv_obj_remove_style_all(row);
-        lv_obj_set_size(row, 270, 18);
-        lv_obj_set_style_radius(row, 3, 0);
-        lv_obj_set_style_border_width(row, 1, 0);
-        lv_obj_set_style_pad_left(row, 7, 0);
-        lv_obj_set_style_bg_opa(row, LV_OPA_COVER, 0);
-        reactive::bind_theme(row, view_model().dark_mode_subject(), reactive::ThemeRole::Button);
+    constexpr int32_t kToolCount = 8;
+    constexpr int32_t kColumnCount = 2;
+    constexpr int32_t kRowCount = kToolCount / kColumnCount;
+    lv_obj_t* row_objects[kToolCount] = {};
+    for (int32_t grid_row = 0; grid_row < kRowCount; ++grid_row) {
+        auto* row_group = lv_obj_create(content);
+        lv_obj_remove_style_all(row_group);
+        lv_obj_set_size(row_group, 270, 18);
+        lv_obj_set_flex_flow(row_group, LV_FLEX_FLOW_ROW);
+        lv_obj_set_flex_align(row_group,
+                              LV_FLEX_ALIGN_START,
+                              LV_FLEX_ALIGN_CENTER,
+                              LV_FLEX_ALIGN_CENTER);
+        lv_obj_set_style_pad_all(row_group, 0, 0);
+        lv_obj_set_style_pad_column(row_group, 4, 0);
 
-        auto* label = lv_label_create(row);
-        lv_label_set_text(label, tool);
-        const lv_font_t* label_font =
-            assets().load_standard_font(12, app::StandardFontWeight::Regular);
-        lv_obj_set_style_text_font(label,
-                                   label_font ? label_font : &lv_font_montserrat_12,
-                                   0);
-        lv_obj_align(label, LV_ALIGN_LEFT_MID, 0, 0);
-        reactive::bind_theme(label, view_model().dark_mode_subject(), reactive::ThemeRole::Text);
-        lv_obj_set_style_border_color(
-            row,
-            index == view_model().tool_selection() ? lv_color_hex(view::color::dark::kPrimary)
-                                                   : lv_color_hex(view::color::dark::kBorder),
-            0);
+        for (int32_t column = 0; column < kColumnCount; ++column) {
+            const int32_t index = grid_row * kColumnCount + column;
+            auto* row = lv_button_create(row_group);
+            row_objects[index] = row;
+            lv_obj_remove_style_all(row);
+            lv_obj_set_size(row, 133, 18);
+            lv_obj_set_style_radius(row, 3, 0);
+            lv_obj_set_style_border_width(row, 1, 0);
+            lv_obj_set_style_pad_left(row, 4, 0);
+            lv_obj_set_style_bg_opa(row, LV_OPA_COVER, 0);
+            reactive::bind_theme(row,
+                                 view_model().dark_mode_subject(),
+                                 reactive::ThemeRole::Button);
+
+            auto* label = lv_label_create(row);
+            lv_label_set_text(label, tools[index]);
+            const lv_font_t* label_font =
+                assets().load_standard_font(12, app::StandardFontWeight::Regular);
+            lv_obj_set_style_text_font(label,
+                                       label_font ? label_font : &lv_font_montserrat_12,
+                                       0);
+            lv_obj_set_width(label, 125);
+            lv_obj_align(label, LV_ALIGN_LEFT_MID, 0, 0);
+            reactive::bind_theme(label,
+                                 view_model().dark_mode_subject(),
+                                 reactive::ThemeRole::Text);
+            lv_obj_set_style_border_color(
+                row,
+                index == view_model().tool_selection()
+                    ? lv_color_hex(view::color::dark::kPrimary)
+                    : lv_color_hex(view::color::dark::kBorder),
+                0);
+        }
     }
 
     auto* binding = new ToolSelectionBinding{};
     binding->view_model = &view_model();
-    for (int32_t index = 0; index < 5; ++index) {
+    for (int32_t index = 0; index < kToolCount; ++index) {
         binding->rows[index] = row_objects[index];
         lv_obj_add_event_cb(row_objects[index], tool_row_clicked, LV_EVENT_CLICKED, binding);
     }

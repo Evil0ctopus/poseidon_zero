@@ -21,15 +21,24 @@
 #include "base_viewmodel.h"
 #include "tool_status.h"
 #include "linux_network.h"
+#include "feature_catalog.h"
 #include "theme.h"
 #include "toast.h"
 
 #include <algorithm>
+#include <chrono>
+#include <cstdint>
 #include <cstdlib>
 #include <cstdio>
+#include <ctime>
 #include <filesystem>
+#include <fstream>
+#include <exception>
 #include <memory>
+#include <mutex>
 #include <string>
+#include <system_error>
+#include <thread>
 
 #if USE_DESKTOP
 #include "desktop_simulator_frame.h"
@@ -132,6 +141,13 @@ public:
     ~ShortcutController() {
         platform::clear_key_release_listener(key_release_listener, this);
         platform::clear_global_key_listener(global_key_listener, this);
+        if (network_thread_.joinable()) {
+            network_thread_.join();
+        }
+    }
+
+    void update() {
+        update_network_query();
     }
 
 private:
@@ -139,6 +155,16 @@ private:
         None,
         Calculator,
         Morse,
+        Ping,
+        Dns,
+    };
+
+    struct NetworkQueryState {
+        std::mutex mutex;
+        std::string host;
+        std::string result;
+        bool dns{false};
+        bool complete{false};
     };
 
     void show_text_tool_prompt(view::widgets::ToastTone tone =
@@ -153,11 +179,16 @@ private:
             message += text_tool_buffer_.empty() ? "_" : text_tool_buffer_;
             message += "\nEnter=solve  Esc=cancel";
         }
-        else {
+        else if (text_tool_mode_ == TextToolMode::Morse) {
             message += "Morse: text or /code";
             if (!text_tool_buffer_.empty()) {
                 message += "\n" + text_tool_buffer_;
             }
+            message += "\nEnter=run  Esc=cancel";
+        }
+        else {
+            message += text_tool_mode_ == TextToolMode::Ping ? "Ping host: " : "DNS name: ";
+            message += text_tool_buffer_.empty() ? "_" : text_tool_buffer_;
             message += "\nEnter=run  Esc=cancel";
         }
         toast_->show_persistent(message, tone);
@@ -184,6 +215,289 @@ private:
             "Files\nHome: " + std::to_string(home_entries.size()) +
             " entries\nMedia: " + std::to_string(media_entries.size()) + " entries";
         toast_->show(message, view::widgets::ToastTone::Default, 5200);
+    }
+
+    void start_network_query(const std::string& host, bool dns) {
+        if (network_query_) {
+            toast_->show("A network check is already running",
+                         view::widgets::ToastTone::Warning,
+                         3200);
+            return;
+        }
+
+        auto state = std::make_shared<NetworkQueryState>();
+        state->host = host;
+        state->dns = dns;
+        network_query_ = state;
+        toast_->show_persistent(dns ? "Resolving hostname..." : "Checking host...");
+        try {
+            network_thread_ = std::thread([state] {
+                std::string output;
+                try {
+                    output = state->dns ? platform::dns_lookup(state->host)
+                                        : platform::ping_host(state->host);
+                }
+                catch (const std::exception& error) {
+                    output = std::string("Network check failed: ") + error.what();
+                }
+                std::lock_guard<std::mutex> lock(state->mutex);
+                state->result = output;
+                state->complete = true;
+            });
+        }
+        catch (const std::system_error& error) {
+            network_query_.reset();
+            toast_->show("Could not start network check: " + error.code().message(),
+                         view::widgets::ToastTone::Error,
+                         4200);
+        }
+    }
+
+    void update_network_query() {
+        const auto state = network_query_;
+        if (!state) {
+            return;
+        }
+
+        std::string result;
+        {
+            std::lock_guard<std::mutex> lock(state->mutex);
+            if (!state->complete) {
+                return;
+            }
+            result = state->result;
+        }
+        if (network_thread_.joinable()) {
+            network_thread_.join();
+        }
+        network_query_.reset();
+
+        if (result.empty()) {
+            toast_->show("Network check returned no result",
+                         view::widgets::ToastTone::Warning,
+                         3200);
+            return;
+        }
+
+        const bool succeeded =
+            result.find("disabled") == std::string::npos &&
+            result.find("Invalid host") == std::string::npos &&
+            result.find("Network check failed:") == std::string::npos &&
+            (state->dns ? result.find("getent:") == std::string::npos
+                        : result.find("bytes from") != std::string::npos);
+        std::size_t line_start = 0;
+        if (!state->dns) {
+            const std::size_t response = result.find("bytes from");
+            const std::size_t packet_stats = result.find("packet loss");
+            const std::size_t useful = response != std::string::npos ? response : packet_stats;
+            if (useful != std::string::npos) {
+                const std::size_t previous_newline = result.rfind('\n', useful);
+                line_start = previous_newline == std::string::npos ? 0 : previous_newline + 1;
+            }
+        }
+        const std::size_t line_end = result.find('\n', line_start);
+        result = result.substr(line_start,
+                               line_end == std::string::npos
+                                   ? std::string::npos
+                                   : line_end - line_start);
+        if (result.size() > 84) {
+            result.resize(84);
+        }
+        toast_->show((state->dns ? "DNS\n" : "Ping\n") + result,
+                     succeeded ? view::widgets::ToastTone::Success
+                               : view::widgets::ToastTone::Warning,
+                     5200);
+    }
+
+    void show_stopwatch() {
+        const auto now = std::chrono::steady_clock::now();
+        if (stopwatch_running_) {
+            stopwatch_elapsed_ += now - stopwatch_started_;
+            stopwatch_running_ = false;
+        }
+        else {
+            stopwatch_started_ = now;
+            stopwatch_running_ = true;
+            toast_->show_persistent("Stopwatch running\nENTER stops  BACKSPACE resets");
+            return;
+        }
+
+        const auto elapsed =
+            std::chrono::duration_cast<std::chrono::milliseconds>(stopwatch_elapsed_).count();
+        const auto hours = elapsed / 3600000;
+        const auto minutes = (elapsed / 60000) % 60;
+        const auto seconds = (elapsed / 1000) % 60;
+        const auto milliseconds = elapsed % 1000;
+        char message[80]{};
+        std::snprintf(message,
+                      sizeof(message),
+                      "Stopwatch\n%02lld:%02lld:%02lld.%03lld",
+                      static_cast<long long>(hours),
+                      static_cast<long long>(minutes),
+                      static_cast<long long>(seconds),
+                      static_cast<long long>(milliseconds));
+        toast_->show(message, view::widgets::ToastTone::Success, 5200);
+    }
+
+    void reset_stopwatch() {
+        stopwatch_elapsed_ = std::chrono::steady_clock::duration::zero();
+        if (stopwatch_running_) {
+            stopwatch_started_ = std::chrono::steady_clock::now();
+        }
+        toast_->show("Stopwatch reset",
+                     view::widgets::ToastTone::Default,
+                     2200);
+    }
+
+    void show_mac_addresses() {
+        const std::filesystem::path interfaces_root("/sys/class/net");
+        std::error_code error;
+        if (!std::filesystem::is_directory(interfaces_root, error) || error) {
+            toast_->show("Local MAC addresses are unavailable in this simulator",
+                         view::widgets::ToastTone::Warning,
+                         4200);
+            return;
+        }
+
+        std::string message = "Local MAC addresses";
+        std::size_t count = 0;
+        for (const auto& entry :
+             std::filesystem::directory_iterator(interfaces_root, error)) {
+            if (error) {
+                break;
+            }
+            if (entry.path().filename() == "lo") {
+                continue;
+            }
+            std::ifstream address_file(entry.path() / "address");
+            std::string address;
+            if (!std::getline(address_file, address) || address.empty()) {
+                continue;
+            }
+            message += "\n" + entry.path().filename().string() + " " + address;
+            if (++count == 3) {
+                break;
+            }
+        }
+        if (error) {
+            toast_->show("Could not read local interface addresses",
+                         view::widgets::ToastTone::Error,
+                         3200);
+            return;
+        }
+        toast_->show(count ? message : "No local interface MAC addresses found",
+                     count ? view::widgets::ToastTone::Default
+                           : view::widgets::ToastTone::Warning,
+                     5200);
+    }
+
+    void save_diagnostics() {
+        const char* home = std::getenv("HOME");
+#if defined(_WIN32)
+        if (!home || home[0] == '\0') {
+            home = std::getenv("USERPROFILE");
+        }
+#endif
+        if (!home || home[0] == '\0') {
+            toast_->show("Cannot find a home folder for the support report",
+                         view::widgets::ToastTone::Error,
+                         4200);
+            return;
+        }
+
+        const std::filesystem::path home_path(home);
+        std::error_code filesystem_error;
+        if (!std::filesystem::is_directory(home_path, filesystem_error) ||
+            filesystem_error) {
+            toast_->show("Cannot access the home folder for the support report",
+                         view::widgets::ToastTone::Error,
+                         4200);
+            return;
+        }
+
+        const std::time_t now = std::time(nullptr);
+        std::tm local{};
+#if defined(_WIN32)
+        localtime_s(&local, &now);
+#else
+        localtime_r(&now, &local);
+#endif
+        char timestamp[24]{};
+        if (std::strftime(timestamp, sizeof(timestamp), "%Y%m%d-%H%M%S", &local) == 0) {
+            toast_->show("Could not create a timestamp for the support report",
+                         view::widgets::ToastTone::Error,
+                         3200);
+            return;
+        }
+
+        std::filesystem::path report_path =
+            home_path / (std::string("poseidon-diagnostics-") + timestamp + ".txt");
+        for (unsigned int suffix = 1;
+             std::filesystem::exists(report_path, filesystem_error);
+             ++suffix) {
+            if (filesystem_error || suffix > 99) {
+                toast_->show("Could not choose a support report filename",
+                             view::widgets::ToastTone::Error,
+                             3200);
+                return;
+            }
+            report_path = home_path /
+                          (std::string("poseidon-diagnostics-") + timestamp + "-" +
+                           std::to_string(suffix) + ".txt");
+        }
+        if (filesystem_error) {
+            toast_->show("Could not choose a support report filename",
+                         view::widgets::ToastTone::Error,
+                         3200);
+            return;
+        }
+
+        std::ofstream report(report_path);
+        if (!report) {
+            toast_->show("Could not create the support report",
+                         view::widgets::ToastTone::Error,
+                         3200);
+            return;
+        }
+
+        const auto memory = platform::read_memory_status();
+        const auto device = platform::read_device_status();
+        const auto storage = platform::read_storage_status();
+        const auto interfaces = platform::list_network_interfaces();
+        report << "POSEIDON-Zero sanitized support report\n"
+               << "Generated: " << timestamp << "\n"
+               << "Version: 0.7.0\n"
+               << "Uptime seconds: " << platform::uptime_seconds() << "\n"
+               << "Memory total KiB: " << memory.mem_total_kib << "\n"
+               << "Memory available KiB: " << memory.mem_available_kib << "\n"
+               << "Wi-Fi present: " << (device.wifi_present ? "yes" : "no") << "\n"
+               << "Wi-Fi connected: " << (device.wifi_connected ? "yes" : "no") << "\n"
+               << "Ethernet present: " << (device.ethernet_present ? "yes" : "no") << "\n"
+               << "Ethernet connected: "
+               << (device.ethernet_connected ? "yes" : "no") << "\n"
+               << "Battery present: " << (device.battery_present ? "yes" : "no") << "\n"
+               << "Storage detected: " << (storage.micro_sd_present ? "yes" : "no") << "\n"
+               << "Network interface count: " << interfaces.size() << "\n";
+        report.flush();
+        if (!report) {
+            toast_->show("Could not write the support report",
+                         view::widgets::ToastTone::Error,
+                         3200);
+            return;
+        }
+        report.close();
+        if (!report) {
+            toast_->show("Could not finish writing the support report",
+                         view::widgets::ToastTone::Error,
+                         3200);
+            return;
+        }
+        toast_->show_highlighted("Saved to ",
+                                 report_path.string(),
+                                 "",
+                                 view::widgets::ToastTone::Success,
+                                 6000,
+                                 true);
     }
 
     void show_system_status(int32_t selection) {
@@ -269,6 +583,32 @@ private:
                 toast_->show(message, view::widgets::ToastTone::Default, 4200);
                 return;
             }
+            case 5: {
+                const auto device = platform::read_device_status();
+                if (!device.battery_present) {
+                    toast_->show("Battery status unavailable",
+                                 view::widgets::ToastTone::Warning,
+                                 3200);
+                    return;
+                }
+                const std::string message =
+                    "Battery\n" + std::to_string(device.battery_percent) + "%\n" +
+                    (device.battery_charging ? "Charging" : "Not charging");
+                toast_->show(message, view::widgets::ToastTone::Default, 4200);
+                return;
+            }
+            case 6: {
+                const std::string clock = platform::current_clock_text();
+                toast_->show(clock.empty() ? "System clock unavailable"
+                                           : "System time\n" + clock,
+                             clock.empty() ? view::widgets::ToastTone::Warning
+                                           : view::widgets::ToastTone::Default,
+                             4200);
+                return;
+            }
+            case 7:
+                save_diagnostics();
+                return;
             default:
                 return;
         }
@@ -288,6 +628,22 @@ private:
         for (std::size_t index = 0; index < count; ++index) {
             message += "\n" + interfaces[index].name +
                        (interfaces[index].connected ? "  up" : "  down");
+        }
+        toast_->show(message, view::widgets::ToastTone::Default, 5200);
+    }
+
+    void show_arp_table() {
+        const auto entries = platform::arp_entries();
+        if (entries.empty()) {
+            toast_->show("Local ARP table is empty",
+                         view::widgets::ToastTone::Warning,
+                         3200);
+            return;
+        }
+        std::string message = "Local ARP entries";
+        const std::size_t count = std::min<std::size_t>(entries.size(), 2);
+        for (std::size_t index = 0; index < count; ++index) {
+            message += "\n" + entries[index];
         }
         toast_->show(message, view::widgets::ToastTone::Default, 5200);
     }
@@ -314,6 +670,21 @@ private:
                       static_cast<long long>(minutes),
                       static_cast<long long>(remaining_seconds));
         toast_->show(message, view::widgets::ToastTone::Default, 4200);
+    }
+
+    void show_feature_status(const platform::FeatureList& features, int32_t selection) {
+        const auto& feature = features[static_cast<std::size_t>(selection)];
+        std::string message = std::string(feature.name) + "\n";
+        if (feature.available) {
+            message += feature.description;
+        }
+        else {
+            message += std::string("Unavailable: ") + feature.description;
+        }
+        toast_->show(message,
+                     feature.available ? view::widgets::ToastTone::Default
+                                       : view::widgets::ToastTone::Warning,
+                     5200);
     }
 
     bool handle_text_tool_key(uint32_t key, bool long_pressed) {
@@ -348,23 +719,31 @@ private:
                 return true;
             }
 
-            const bool decode = text_tool_buffer_.front() == '/';
-            const std::string result =
-                decode ? platform::decode_morse(text_tool_buffer_.substr(1))
-                       : platform::encode_morse(text_tool_buffer_);
-            if (result.empty()) {
-                show_text_tool_prompt(view::widgets::ToastTone::Error,
-                                      "No Morse output");
+            if (text_tool_mode_ == TextToolMode::Morse) {
+                const bool decode = text_tool_buffer_.front() == '/';
+                const std::string result =
+                    decode ? platform::decode_morse(text_tool_buffer_.substr(1))
+                           : platform::encode_morse(text_tool_buffer_);
+                if (result.empty()) {
+                    show_text_tool_prompt(view::widgets::ToastTone::Error,
+                                          "No Morse output");
+                    return true;
+                }
+
+                cancel_text_tool();
+                toast_->show_highlighted("Morse: ",
+                                         result,
+                                         "",
+                                         view::widgets::ToastTone::Success,
+                                         6000,
+                                         true);
                 return true;
             }
 
+            const bool dns = text_tool_mode_ == TextToolMode::Dns;
+            const std::string host = text_tool_buffer_;
             cancel_text_tool();
-            toast_->show_highlighted("Morse: ",
-                                     result,
-                                     "",
-                                     view::widgets::ToastTone::Success,
-                                     6000,
-                                     true);
+            start_network_query(host, dns);
             return true;
         }
         if (key == LV_KEY_BACKSPACE || key == LV_KEY_DEL) {
@@ -381,12 +760,18 @@ private:
         const bool morse_input =
             (key >= 'a' && key <= 'z') || (key >= 'A' && key <= 'Z') ||
             key == ' ' || key == '.' || key == '-' || key == '/';
-        const bool allowed = text_tool_mode_ == TextToolMode::Calculator
-                                 ? calculator_input
-                                 : morse_input;
+        const bool network_input =
+            (key >= '0' && key <= '9') || (key >= 'a' && key <= 'z') ||
+            (key >= 'A' && key <= 'Z') || key == '.' || key == '-';
+        const bool allowed =
+            text_tool_mode_ == TextToolMode::Calculator
+                ? calculator_input
+                : text_tool_mode_ == TextToolMode::Morse ? morse_input : network_input;
         if (allowed) {
             const std::size_t limit =
-                text_tool_mode_ == TextToolMode::Calculator ? 64 : 48;
+                text_tool_mode_ == TextToolMode::Calculator
+                    ? 64
+                    : text_tool_mode_ == TextToolMode::Morse ? 48 : 253;
             if (text_tool_buffer_.size() >= limit) {
                 show_text_tool_prompt(view::widgets::ToastTone::Warning,
                                       "Input limit reached");
@@ -467,14 +852,26 @@ private:
         if (view_model_.current_page() != model::AppPage::Apple) {
             if (key == LV_KEY_UP || key == 'f') {
                 if (!long_pressed) {
-                    view_model_.move_tool_selection(-1);
+                    view_model_.move_tool_selection(-2);
                 }
                 return true;
             }
             if (key == LV_KEY_DOWN || key == 'x') {
                 if (!long_pressed) {
-                    view_model_.move_tool_selection(1);
+                    view_model_.move_tool_selection(2);
                 }
+                return true;
+            }
+            if (key == LV_KEY_LEFT || key == LV_KEY_RIGHT) {
+                if (!long_pressed) {
+                    view_model_.move_tool_selection(key == LV_KEY_LEFT ? -1 : 1);
+                }
+                return true;
+            }
+            if ((key == LV_KEY_BACKSPACE || key == LV_KEY_DEL) &&
+                view_model_.current_page() == model::AppPage::Tools &&
+                view_model_.tool_selection() == 5 && !long_pressed) {
+                reset_stopwatch();
                 return true;
             }
             if (key == LV_KEY_ENTER) {
@@ -503,6 +900,15 @@ private:
                             case 4:
                                 show_uptime();
                                 break;
+                            case 5:
+                                show_stopwatch();
+                                break;
+                            case 6:
+                                show_mac_addresses();
+                                break;
+                            case 7:
+                                save_diagnostics();
+                                break;
                             default:
                                 break;
                         }
@@ -526,10 +932,25 @@ private:
                                              4200);
                                 break;
                             }
+                            case 2:
+                                start_text_tool(TextToolMode::Ping);
+                                break;
+                            case 3:
+                                start_text_tool(TextToolMode::Dns);
+                                break;
                             case 4:
                                 toast_->show("Port scanning is disabled",
                                              view::widgets::ToastTone::Warning,
                                              3200);
+                                break;
+                            case 5:
+                                show_system_status(3);
+                                break;
+                            case 6:
+                                show_arp_table();
+                                break;
+                            case 7:
+                                save_diagnostics();
                                 break;
                             default:
                                 toast_->show("This network action is unavailable",
@@ -548,17 +969,26 @@ private:
                             case 2:
                                 show_system_status(2);
                                 break;
-                            case 3:
-                                toast_->show("GATT access is unavailable",
-                                             view::widgets::ToastTone::Warning,
-                                             3200);
-                                break;
-                            case 4:
-                                toast_->show("No supported radio tools are enabled",
-                                             view::widgets::ToastTone::Warning,
-                                             3200);
+                            default:
+                                show_feature_status(platform::wireless_features(),
+                                                    view_model_.tool_selection());
                                 break;
                         }
+                        return true;
+                    }
+                    if (view_model_.current_page() == model::AppPage::Infrared) {
+                        show_feature_status(platform::infrared_features(),
+                                            view_model_.tool_selection());
+                        return true;
+                    }
+                    if (view_model_.current_page() == model::AppPage::Expansion) {
+                        show_feature_status(platform::expansion_features(),
+                                            view_model_.tool_selection());
+                        return true;
+                    }
+                    if (view_model_.current_page() == model::AppPage::Media) {
+                        show_feature_status(platform::media_features(),
+                                            view_model_.tool_selection());
                         return true;
                     }
                     toast_->show("This action is not implemented yet",
@@ -674,6 +1104,10 @@ private:
     std::unique_ptr<view::widgets::HelpPopup> help_popup_;
     std::string text_tool_buffer_;
     TextToolMode text_tool_mode_{TextToolMode::None};
+    std::shared_ptr<NetworkQueryState> network_query_;
+    std::thread network_thread_;
+    std::chrono::steady_clock::time_point stopwatch_started_{};
+    std::chrono::steady_clock::duration stopwatch_elapsed_{};
     uint32_t exit_key_pressed_{0};
     bool exit_armed_{false};
 };
@@ -797,6 +1231,7 @@ int Application::run() {
 #endif
     ) {
         lv_timer_handler();
+        shortcuts.update();
         if (store_capture_mode && ++settled_frames >= 20) {
             const auto capture = platform::screenshot::capture_active_screen();
             if (!capture.success) {

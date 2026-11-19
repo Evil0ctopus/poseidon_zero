@@ -12,8 +12,8 @@ set(APP_DEBIAN_REVISION "rev1" CACHE STRING "Debian package revision/vendor suff
 set(APP_DEBIAN_ARCHITECTURE "arm64" CACHE STRING "Debian package architecture")
 # Deliberately a placeholder: the store rejects packages whose Maintainer is
 # still a template/M5Stack identity, so set your own name and email here.
-set(APP_MAINTAINER "POSEIDON Project <noreply@github.com>" CACHE STRING "Debian package maintainer")
-set(APP_PACKAGE_DESCRIPTION "POSEIDON-style portable Linux research and operations application" CACHE STRING "Debian package summary")
+set(APP_MAINTAINER "Evil0ctopus <228378929+Evil0ctopus@users.noreply.github.com>" CACHE STRING "Debian package maintainer")
+set(APP_PACKAGE_DESCRIPTION "CardputerZero system diagnostics and local utilities" CACHE STRING "Debian package summary")
 set(APP_INSTALL_SYSTEMD_SERVICE OFF CACHE BOOL "Install a systemd service file for embedded deployments")
 
 if(NOT APP_DEBIAN_PACKAGE_NAME MATCHES "^[a-z0-9][a-z0-9.+-]*$")

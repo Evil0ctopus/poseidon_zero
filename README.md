@@ -424,6 +424,9 @@ The first page bottom nav bar maps hardware/keyboard keys from left to right:
 On the home menu, `Up`/`F` and `Down`/`X` move between rows; `Left` and `Right` select
 within a row. Click a category to select it, then press `ENTER` to open it.
 
+Category pages show all eight entries in a two-column grid. Use `Up`/`F` and `Down`/`X` to
+move by rows, `Left` and `Right` to move by columns, and `ENTER` to run the selected tool.
+
 The counter page uses direct keyboard shortcuts:
 
 | Key | Action |
@@ -444,11 +447,14 @@ Open **Tools**, select **Morse**, and press `ENTER`. Type letters and spaces to 
 prefix Morse code with `/` to decode it (for example, `/... --- ...`). Press `ENTER` to run,
 `BACKSPACE` to edit, or `ESC` to cancel.
 
-The other **Tools** rows show read-only entry counts for the home/media folders, the system
-clock, and system uptime. On **System**, select a row and press `ENTER` to view memory, Wi-Fi,
-Bluetooth, Ethernet, or microSD status. **Network** shows local interface and gateway status;
-ping, DNS, and port-scanning actions are not enabled in this build. **Wireless** exposes local
-Wi-Fi, signal, and Bluetooth status only; scanning and GATT actions are unavailable.
+**Tools** also includes a start/stop stopwatch (`BACKSPACE` resets it), local interface MAC
+addresses, and a sanitized support report saved in the home folder. **System** exposes memory,
+Wi-Fi, Bluetooth, Ethernet, storage, battery, clock, and support-report actions. **Network**
+shows local interface and gateway status, allows one manually entered ping or DNS lookup in the
+background, and can display the local ARP table. Port scanning and host discovery are not
+provided. **Wireless** exposes local Wi-Fi, signal, and Bluetooth status; device discovery,
+GATT writes, and transmission features require separate hardware/authorization work and are
+not enabled.
 
 ### Adding a Screen
 
@@ -531,6 +537,28 @@ cmake --workflow --preset cp0-cross-package
 > Use Debian based Linux host with CPack generator 
 > as other OS may not resolve the dependencies correctly
 > no full dpkg, dpkg-shlibdeps, objdump and readelf support
+
+## CardputerZero AppStore Submission
+
+1. Build the ARM64 Debian package above and validate it with
+   `.agents/skills/cardputerzero-package-release/scripts/validate_app_builder.cmake`.
+   The package name, project version, and architecture must match `app-builder.json`; the current
+   expected release filename is `poseidon-zero_0.7.0-rev1_arm64.deb`.
+2. Sign in with GitHub at <https://dev.cardputer.cc/#/upload>. The portal accepts packages up to
+   80 MB. Selecting a `.deb` parses it locally; it is not uploaded until you submit.
+3. Review the package checks, then complete the listing: unique app name, summary, category,
+   author name, SPDX license, an available four-character share code, declared permissions, icon,
+   and 1–6 screenshots at 320×170. A public source repository is optional but can prefill the
+   listing from this repository's `app-builder.json`.
+4. Submit the package. The portal creates a review pull request. For a first-time submission,
+   include a short demo video in that pull request. After it is merged, the store index may take a
+   few minutes to update. The first uploader owns the package name; later package releases must
+   use a higher version.
+
+The portal rejects packages that run with root privileges or install files in disallowed shared
+paths. It also checks package metadata and maintainer scripts. Do not upload the existing
+`dist/POSEIDON-Zero_0.4.0_rev1_arm64.deb`; it predates the current 0.7.0 source and is not the
+release artifact.
 
 # Contributing
 
