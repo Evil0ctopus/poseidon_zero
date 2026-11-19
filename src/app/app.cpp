@@ -491,6 +491,8 @@ int Application::run() {
     }
 
     viewmodel::BaseViewModel view_model;
+    const bool store_capture_mode =
+        std::getenv("POSEIDON_STORE_CAPTURE") != nullptr;
     const std::string user_config_path = writable_config_path();
     std::string loaded_config_path = APP_CONFIG_FILE;
     if (user_config_path != APP_CONFIG_FILE) {
@@ -509,6 +511,9 @@ int Application::run() {
                  config.dark_mode ? "yes" : "no");
     } else {
         LOG_WARN("failed to load config {}: {}; using defaults", loaded_config_path, config_error);
+    }
+    if (store_capture_mode) {
+        view_model.set_dark_mode(false);
     }
 
 #if USE_DESKTOP
@@ -536,11 +541,17 @@ int Application::run() {
     ShortcutController shortcuts(view_model, assets);
 
     DarkModePersistence dark_mode_persistence{user_config_path, view_model.is_dark_mode()};
-    auto* dark_mode_observer = lv_subject_add_observer(view_model.dark_mode_subject(),
-                                                        persist_dark_mode_observer,
-                                                        &dark_mode_persistence);
+    auto* dark_mode_observer =
+        store_capture_mode
+            ? nullptr
+            : lv_subject_add_observer(view_model.dark_mode_subject(),
+                                      persist_dark_mode_observer,
+                                      &dark_mode_persistence);
 
     bool running = true;
+    int exit_code = 0;
+    int capture_phase = 0;
+    int settled_frames = 0;
     auto* quit_observer = lv_subject_add_observer(view_model.quit_requested_subject(),
                                                   quit_requested_observer,
                                                   &running);
@@ -553,6 +564,22 @@ int Application::run() {
 #endif
     ) {
         lv_timer_handler();
+        if (store_capture_mode && ++settled_frames >= 20) {
+            const auto capture = platform::screenshot::capture_active_screen();
+            if (!capture.success) {
+                LOG_ERROR("store screenshot capture failed: {}", capture.error);
+                exit_code = 1;
+                running = false;
+            }
+            else if (capture_phase == 0) {
+                capture_phase = 1;
+                settled_frames = 0;
+                view_model.set_dark_mode(true);
+            }
+            else {
+                running = false;
+            }
+        }
         lv_delay_ms(5);
     }
 
@@ -563,7 +590,7 @@ int Application::run() {
         lv_observer_remove(dark_mode_observer);
     }
 
-    return 0;
+    return exit_code;
 }
 
 } // namespace app
