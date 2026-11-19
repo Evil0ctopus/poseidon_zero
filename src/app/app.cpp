@@ -15,6 +15,7 @@
 #include "safe_tools.h"
 #include "screen_manager.h"
 #include "base_viewmodel.h"
+#include "tool_status.h"
 #include "theme.h"
 #include "toast.h"
 
@@ -168,6 +169,41 @@ private:
         toast_->hide();
     }
 
+    void show_file_summary() {
+        const char* home = std::getenv("HOME");
+        const std::string home_path = home && home[0] != '\0' ? home : "/home";
+        const auto home_entries = platform::list_directory(home_path);
+        const auto media_entries = platform::list_directory("/media");
+        const std::string message =
+            "Files\nHome: " + std::to_string(home_entries.size()) +
+            " entries\nMedia: " + std::to_string(media_entries.size()) + " entries";
+        toast_->show(message, view::widgets::ToastTone::Default, 5200);
+    }
+
+    void show_uptime() {
+        const auto seconds = platform::uptime_seconds();
+        if (seconds <= 0) {
+            toast_->show("System uptime unavailable",
+                         view::widgets::ToastTone::Warning,
+                         3200);
+            return;
+        }
+
+        const auto days = seconds / 86400;
+        const auto hours = (seconds / 3600) % 24;
+        const auto minutes = (seconds / 60) % 60;
+        const auto remaining_seconds = seconds % 60;
+        char message[64]{};
+        std::snprintf(message,
+                      sizeof(message),
+                      "Uptime %lldd %02lld:%02lld:%02lld",
+                      static_cast<long long>(days),
+                      static_cast<long long>(hours),
+                      static_cast<long long>(minutes),
+                      static_cast<long long>(remaining_seconds));
+        toast_->show(message, view::widgets::ToastTone::Default, 4200);
+    }
+
     bool handle_text_tool_key(uint32_t key, bool long_pressed) {
         if (long_pressed) {
             return true;
@@ -318,14 +354,33 @@ private:
             }
             if (key == LV_KEY_ENTER) {
                 if (!long_pressed) {
-                    if (view_model_.current_page() == model::AppPage::Tools &&
-                        view_model_.tool_selection() == 1) {
-                        start_text_tool(TextToolMode::Calculator);
-                        return true;
-                    }
-                    if (view_model_.current_page() == model::AppPage::Tools &&
-                        view_model_.tool_selection() == 3) {
-                        start_text_tool(TextToolMode::Morse);
+                    if (view_model_.current_page() == model::AppPage::Tools) {
+                        switch (view_model_.tool_selection()) {
+                            case 0:
+                                show_file_summary();
+                                break;
+                            case 1:
+                                start_text_tool(TextToolMode::Calculator);
+                                break;
+                            case 2: {
+                                const std::string clock = platform::current_clock_text();
+                                toast_->show(clock.empty() ? "System clock unavailable"
+                                                           : "System time\n" + clock,
+                                             clock.empty()
+                                                 ? view::widgets::ToastTone::Warning
+                                                 : view::widgets::ToastTone::Default,
+                                             4200);
+                                break;
+                            }
+                            case 3:
+                                start_text_tool(TextToolMode::Morse);
+                                break;
+                            case 4:
+                                show_uptime();
+                                break;
+                            default:
+                                break;
+                        }
                         return true;
                     }
                     toast_->show("This action is not implemented yet",

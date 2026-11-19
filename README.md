@@ -441,6 +441,9 @@ Open **Tools**, select **Morse**, and press `ENTER`. Type letters and spaces to 
 prefix Morse code with `/` to decode it (for example, `/... --- ...`). Press `ENTER` to run,
 `BACKSPACE` to edit, or `ESC` to cancel.
 
+The other **Tools** rows show read-only entry counts for the home/media folders, the system
+clock, and system uptime.
+
 ### Adding a Screen
 
 1. Add a new page enum value in `src/model/base_model.h`.
