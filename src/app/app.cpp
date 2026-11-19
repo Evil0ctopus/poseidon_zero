@@ -1108,6 +1108,7 @@ private:
     std::thread network_thread_;
     std::chrono::steady_clock::time_point stopwatch_started_{};
     std::chrono::steady_clock::duration stopwatch_elapsed_{};
+    bool stopwatch_running_{false};
     uint32_t exit_key_pressed_{0};
     bool exit_armed_{false};
 };
