@@ -21,7 +21,7 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends \
-            cmake ninja-build crossbuild-essential-arm64 cpack dpkg-dev
+            cmake ninja-build crossbuild-essential-arm64 dpkg-dev
 
       - name: Configure, build, and package
         run: cmake --workflow --preset cp0-cross-package
