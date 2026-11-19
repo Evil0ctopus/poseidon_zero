@@ -14,6 +14,7 @@
 #include "storage_status.h"
 #include "feature_catalog.h"
 #include "tool_status.h"
+#include "safe_tools.h"
 #include "theme.h"
 #include "ui_const.h"
 #include <cstdio>
@@ -43,6 +44,8 @@ void ButterScreen::build_content(lv_obj_t* content) {
     };
     char file_summary[40] = "Files";
     char gateway_summary[64] = "Gateway";
+    char clock_summary[64] = "Clock";
+    char uptime_summary[64] = "Uptime";
 
     switch (view_model().current_page()) {
         case model::AppPage::Network:
@@ -95,6 +98,49 @@ void ButterScreen::build_content(lv_obj_t* content) {
                               "Files  %zu entries",
                               home.size() + media.size());
                 tools[0] = file_summary;
+                bool valid = true;
+                const double result = platform::calculate_expression("1+1", valid);
+                char calculator_summary[64];
+                if (valid) {
+                    std::snprintf(calculator_summary,
+                                  sizeof(calculator_summary),
+                                  "Calculator  %.2f",
+                                  result);
+                } else {
+                    std::snprintf(calculator_summary,
+                                  sizeof(calculator_summary),
+                                  "Calculator  ready");
+                }
+                static char calculator_storage[64];
+                std::snprintf(calculator_storage,
+                              sizeof(calculator_storage),
+                              "%s",
+                              calculator_summary);
+                tools[1] = calculator_storage;
+                const std::string clock = platform::current_clock_text();
+                std::snprintf(clock_summary,
+                              sizeof(clock_summary),
+                              "Clock  %s",
+                              clock.c_str());
+                tools[2] = clock_summary;
+                const std::string morse = platform::encode_morse("SOS");
+                char morse_summary[64];
+                std::snprintf(morse_summary,
+                              sizeof(morse_summary),
+                              "Morse  %s",
+                              morse.c_str());
+                static char morse_storage[64];
+                std::snprintf(morse_storage,
+                              sizeof(morse_storage),
+                              "%s",
+                              morse_summary);
+                tools[3] = morse_storage;
+                const std::int64_t uptime = platform::uptime_seconds();
+                std::snprintf(uptime_summary,
+                              sizeof(uptime_summary),
+                              "Uptime  %lld sec",
+                              static_cast<long long>(uptime));
+                tools[4] = uptime_summary;
             }
             break;
         case model::AppPage::Media:
