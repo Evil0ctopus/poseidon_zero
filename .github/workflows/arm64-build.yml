@@ -10,29 +10,6 @@ permissions:
   contents: read
 
 jobs:
-  windows-simulator:
-    runs-on: windows-2022
-
-    steps:
-      - name: Check out sources
-        uses: actions/checkout@v4
-
-      - name: Install vcpkg
-        shell: pwsh
-        run: |
-          git clone --depth 1 https://github.com/microsoft/vcpkg.git C:\vcpkg
-          C:\vcpkg\bootstrap-vcpkg.bat
-
-      - name: Configure Windows simulator
-        shell: pwsh
-        run: |
-          $env:VCPKG_ROOT="C:\vcpkg"
-          cmake --preset win32-msvc
-
-      - name: Build Windows simulator
-        shell: pwsh
-        run: cmake --build --preset win32-msvc-dbg --parallel 2
-
   arm64-package:
     runs-on: ubuntu-24.04
 
