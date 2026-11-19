@@ -112,6 +112,16 @@ void BaseViewModel::show_expansion_page() {
     publish_all();
 }
 
+void BaseViewModel::show_tools_page() {
+    model_.set_current_page(model::AppPage::Tools);
+    publish_all();
+}
+
+void BaseViewModel::show_media_page() {
+    model_.set_current_page(model::AppPage::Media);
+    publish_all();
+}
+
 void BaseViewModel::toggle_page() {
     model_.toggle_page();
     publish_all();

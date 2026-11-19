@@ -49,7 +49,7 @@ int32_t BaseModel::menu_selection() const {
 }
 
 void BaseModel::set_menu_selection(int32_t index) {
-    menu_selection_ = std::clamp(index, int32_t{0}, int32_t{4});
+    menu_selection_ = std::clamp(index, int32_t{0}, int32_t{6});
 }
 
 void BaseModel::move_menu_selection(int32_t delta) {

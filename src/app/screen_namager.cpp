@@ -89,7 +89,9 @@ void ScreenManager::flush_requested_page() {
     if (requested_page_ == model::AppPage::Network ||
         requested_page_ == model::AppPage::Wireless ||
         requested_page_ == model::AppPage::Infrared ||
-        requested_page_ == model::AppPage::Expansion) {
+        requested_page_ == model::AppPage::Expansion ||
+        requested_page_ == model::AppPage::Tools ||
+        requested_page_ == model::AppPage::Media) {
         show_butter_screen();
         return;
     }

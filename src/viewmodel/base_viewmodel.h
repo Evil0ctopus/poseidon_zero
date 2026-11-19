@@ -42,6 +42,8 @@ public:
     void show_wireless_page();
     void show_infrared_page();
     void show_expansion_page();
+    void show_tools_page();
+    void show_media_page();
     void toggle_page();
     void increment_counter();
     void decrement_counter();

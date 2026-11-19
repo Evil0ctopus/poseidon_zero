@@ -17,6 +17,8 @@ enum class AppPage {
     Wireless = 3,
     Infrared = 4,
     Expansion = 5,
+    Tools = 6,
+    Media = 7,
 };
 
 class BaseModel {

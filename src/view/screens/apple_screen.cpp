@@ -15,7 +15,7 @@ namespace screen {
 namespace {
 
 struct MenuSelectionBinding {
-    lv_obj_t* rows[5];
+    lv_obj_t* rows[7];
 };
 
 void cleanup_menu_selection(lv_event_t* event) {
@@ -29,7 +29,7 @@ void menu_selection_observer(lv_observer_t* observer, lv_subject_t* subject) {
     }
 
     const int32_t selected = lv_subject_get_int(subject);
-    for (int32_t index = 0; index < 5; ++index) {
+    for (int32_t index = 0; index < 7; ++index) {
         if (!lv_obj_is_valid(binding->rows[index])) {
             continue;
         }
@@ -109,9 +109,11 @@ void AppleScreen::build_content(lv_obj_t* content) {
         "3  INFRARED",
         "4  EXPANSION",
         "5  SYSTEM",
+        "6  TOOLS",
+        "7  MEDIA",
     };
-    lv_obj_t* row_objects[5] = {};
-    for (int32_t index = 0; index < 5; ++index) {
+    lv_obj_t* row_objects[7] = {};
+    for (int32_t index = 0; index < 7; ++index) {
         auto* row = lv_button_create(content);
         row_objects[index] = row;
         lv_obj_remove_style_all(row);
@@ -136,7 +138,7 @@ void AppleScreen::build_content(lv_obj_t* content) {
     }
 
     const int32_t selected = view_model().menu_selection();
-    for (int32_t index = 0; index < 5; ++index) {
+    for (int32_t index = 0; index < 7; ++index) {
         lv_obj_set_style_border_color(
             row_objects[index],
             index == selected ? lv_color_hex(view::color::dark::kPrimary)
@@ -145,7 +147,7 @@ void AppleScreen::build_content(lv_obj_t* content) {
     }
 
     auto* binding = new MenuSelectionBinding{};
-    for (int32_t index = 0; index < 5; ++index) {
+    for (int32_t index = 0; index < 7; ++index) {
         binding->rows[index] = row_objects[index];
     }
     lv_obj_add_event_cb(content, cleanup_menu_selection, LV_EVENT_DELETE, binding);

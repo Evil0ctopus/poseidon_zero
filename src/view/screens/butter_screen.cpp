@@ -73,6 +73,22 @@ void ButterScreen::build_content(lv_obj_t* content) {
             tools[3] = "GPIO";
             tools[4] = "LoRa / radio hats";
             break;
+        case model::AppPage::Tools:
+            title = "TOOLS";
+            tools[0] = "File browser";
+            tools[1] = "Calculator";
+            tools[2] = "Stopwatch";
+            tools[3] = "Morse";
+            tools[4] = "Screen test";
+            break;
+        case model::AppPage::Media:
+            title = "MEDIA";
+            tools[0] = "Camera";
+            tools[1] = "Recorder";
+            tools[2] = "Music";
+            tools[3] = "Piano";
+            tools[4] = "IR audio routing";
+            break;
         default:
             break;
     }

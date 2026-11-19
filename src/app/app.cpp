@@ -159,6 +159,12 @@ private:
                         case 4:
                             view_model_.show_butter_page();
                             break;
+                        case 5:
+                            view_model_.show_tools_page();
+                            break;
+                        case 6:
+                            view_model_.show_media_page();
+                            break;
                     }
                 }
                 return true;
