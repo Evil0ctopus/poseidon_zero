@@ -445,7 +445,10 @@ prefix Morse code with `/` to decode it (for example, `/... --- ...`). Press `EN
 `BACKSPACE` to edit, or `ESC` to cancel.
 
 The other **Tools** rows show read-only entry counts for the home/media folders, the system
-clock, and system uptime.
+clock, and system uptime. On **System**, select a row and press `ENTER` to view memory, Wi-Fi,
+Bluetooth, Ethernet, or microSD status. **Network** shows local interface and gateway status;
+ping, DNS, and port-scanning actions are not enabled in this build. **Wireless** exposes local
+Wi-Fi, signal, and Bluetooth status only; scanning and GATT actions are unavailable.
 
 ### Adding a Screen
 

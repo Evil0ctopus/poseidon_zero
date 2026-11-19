@@ -5,21 +5,21 @@ namespace platform {
 FeatureList network_features() {
     return {{
         {"Interfaces", "View Wi-Fi, Ethernet, and USB-network state", FeatureRisk::Safe, true},
-        {"Host discovery", "Discover hosts on the local subnet", FeatureRisk::Authorized, true},
-        {"Ping", "Check reachability of an authorized host", FeatureRisk::Safe, true},
-        {"DNS", "Resolve authorized hostnames", FeatureRisk::Safe, true},
-        {"Port scan", "Scan a host owned or authorized for testing", FeatureRisk::Authorized, true},
+        {"Host discovery", "Not available in this build", FeatureRisk::Authorized, false},
+        {"Ping", "Not available in this build", FeatureRisk::Safe, false},
+        {"DNS", "Not available in this build", FeatureRisk::Safe, false},
+        {"Port scan", "Disabled", FeatureRisk::Authorized, false},
         {"Ethernet", "View and troubleshoot wired network state", FeatureRisk::Safe, true},
-        {"ARP", "Read the local address resolution table", FeatureRisk::Safe, true},
-        {"Diagnostics", "Run bounded network checks", FeatureRisk::Safe, true},
+        {"ARP", "Not available in this build", FeatureRisk::Safe, false},
+        {"Diagnostics", "Not available in this build", FeatureRisk::Safe, false},
     }};
 }
 
 FeatureList wireless_features() {
     return {{
-        {"Wi-Fi scan", "Passive inventory with NetworkManager", FeatureRisk::Authorized, true},
+        {"Wi-Fi scan", "Not available in this build", FeatureRisk::Authorized, false},
         {"Signal status", "Read connected Wi-Fi signal state", FeatureRisk::Safe, true},
-        {"BLE scan", "Discover Bluetooth Low Energy devices", FeatureRisk::Authorized, true},
+        {"BLE scan", "Not available in this build", FeatureRisk::Authorized, false},
         {"GATT", "Read or write only explicitly selected services", FeatureRisk::Authorized, false},
         {"Tracker scan", "Identify nearby tracker advertisement types", FeatureRisk::Authorized, false},
         {"Spectrum", "Requires supported external radio hardware", FeatureRisk::Experimental, false},
@@ -37,20 +37,20 @@ FeatureList infrared_features() {
         {"LED test", "Verify IR hardware safely", FeatureRisk::Experimental, false},
         {"Pranks", "Transmit-only disruptive actions disabled", FeatureRisk::Experimental, false},
         {"Remote learn", "Learn from an owned remote", FeatureRisk::Authorized, false},
-        {"Transmit gate", "Explicit confirmation required for every send", FeatureRisk::Safe, true},
+        {"Transmit gate", "Transmission is disabled", FeatureRisk::Safe, false},
     }};
 }
 
 FeatureList expansion_features() {
     return {{
-        {"Grove I2C", "Enumerate I2C peripherals", FeatureRisk::Safe, true},
+        {"Grove I2C", "Not available in this build", FeatureRisk::Safe, false},
         {"Grove UART", "Operate an attached UART device", FeatureRisk::Authorized, false},
         {"SPI", "Enumerate and test supported SPI hats", FeatureRisk::Authorized, false},
         {"GPIO", "Read and write explicitly exposed pins", FeatureRisk::Authorized, false},
         {"LoRa", "Receive or transmit only with an attached Cap", FeatureRisk::Experimental, false},
         {"CC1101", "Sub-GHz requires separate authorized Cap", FeatureRisk::Experimental, false},
         {"NFC/RFID", "Requires a supported external Cap", FeatureRisk::Experimental, false},
-        {"USB host", "List USB devices and connection state", FeatureRisk::Safe, true},
+        {"USB host", "Not available in this build", FeatureRisk::Safe, false},
     }};
 }
 
@@ -74,8 +74,8 @@ FeatureList media_features() {
         {"Music", "Play local audio", FeatureRisk::Safe, false},
         {"Piano", "Keyboard instrument", FeatureRisk::Safe, false},
         {"Album art", "Read local music metadata", FeatureRisk::Safe, false},
-        {"Microphone", "Read microphone capability", FeatureRisk::Safe, true},
-        {"Speaker", "Read or route audio output", FeatureRisk::Safe, true},
+        {"Microphone", "Not available in this build", FeatureRisk::Safe, false},
+        {"Speaker", "Not available in this build", FeatureRisk::Safe, false},
         {"Gallery", "Browse local images", FeatureRisk::Safe, false},
     }};
 }

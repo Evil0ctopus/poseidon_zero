@@ -8,17 +8,23 @@
 
 #include "application_config.h"
 #include "asset_manager.h"
+#include "capabilities.h"
+#include "device_status.h"
 #include "help_popup.h"
 #include "logger.h"
 #include "linux_input.h"
+#include "memory_status.h"
 #include "screenshot_service.h"
 #include "safe_tools.h"
 #include "screen_manager.h"
+#include "storage_status.h"
 #include "base_viewmodel.h"
 #include "tool_status.h"
+#include "linux_network.h"
 #include "theme.h"
 #include "toast.h"
 
+#include <algorithm>
 #include <cstdlib>
 #include <cstdio>
 #include <filesystem>
@@ -177,6 +183,112 @@ private:
         const std::string message =
             "Files\nHome: " + std::to_string(home_entries.size()) +
             " entries\nMedia: " + std::to_string(media_entries.size()) + " entries";
+        toast_->show(message, view::widgets::ToastTone::Default, 5200);
+    }
+
+    void show_system_status(int32_t selection) {
+        switch (selection) {
+            case 0: {
+                const auto memory = platform::read_memory_status();
+                if (memory.mem_available_kib < 0 || memory.mem_total_kib < 0) {
+                    toast_->show("Memory status unavailable",
+                                 view::widgets::ToastTone::Warning,
+                                 3200);
+                    return;
+                }
+                char message[80]{};
+                std::snprintf(message,
+                              sizeof(message),
+                              "Memory\n%lld MB available\n%lld MB total",
+                              static_cast<long long>(memory.mem_available_kib / 1024),
+                              static_cast<long long>(memory.mem_total_kib / 1024));
+                toast_->show(message, view::widgets::ToastTone::Default, 4200);
+                return;
+            }
+            case 1: {
+                const auto device = platform::read_device_status();
+                std::string message = std::string("Wi-Fi\n") +
+                                      (device.wifi_present ? "Available" : "Unavailable") +
+                                      (device.wifi_connected ? "\nConnected" : "\nNot connected");
+                if (device.wifi_strength_percent >= 0) {
+                    message += "\nSignal " +
+                               std::to_string(device.wifi_strength_percent) + "%";
+                }
+                toast_->show(message,
+                             device.wifi_present ? view::widgets::ToastTone::Default
+                                                 : view::widgets::ToastTone::Warning,
+                             4200);
+                return;
+            }
+            case 2: {
+                const auto capability =
+                    platform::read_capability(platform::Capability::Bluetooth);
+                const std::string message =
+                    std::string("Bluetooth\n") +
+                    (capability.present ? "Available" : "Unavailable") +
+                    (capability.enabled ? "\nEnabled" : "\nNot active");
+                toast_->show(message,
+                             capability.present ? view::widgets::ToastTone::Default
+                                                : view::widgets::ToastTone::Warning,
+                             4200);
+                return;
+            }
+            case 3: {
+                const auto device = platform::read_device_status();
+                const std::string message =
+                    std::string("Ethernet\n") +
+                    (device.ethernet_present ? "Available" : "Unavailable") +
+                    (device.ethernet_connected ? "\nConnected" : "\nNot connected");
+                toast_->show(message,
+                             device.ethernet_present ? view::widgets::ToastTone::Default
+                                                     : view::widgets::ToastTone::Warning,
+                             4200);
+                return;
+            }
+            case 4: {
+                const auto storage = platform::read_storage_status();
+                if (!storage.micro_sd_present) {
+                    toast_->show("Storage\nNo microSD card detected",
+                                 view::widgets::ToastTone::Warning,
+                                 3200);
+                    return;
+                }
+                if (storage.total_bytes < 0 || storage.free_bytes < 0) {
+                    toast_->show("Storage\nCard detected; capacity unavailable",
+                                 view::widgets::ToastTone::Warning,
+                                 4200);
+                    return;
+                }
+                constexpr int64_t kBytesPerMiB = 1024 * 1024;
+                char message[96]{};
+                std::snprintf(message,
+                              sizeof(message),
+                              "Storage\n%lld MB free\n%lld MB total",
+                              static_cast<long long>(storage.free_bytes / kBytesPerMiB),
+                              static_cast<long long>(storage.total_bytes / kBytesPerMiB));
+                toast_->show(message, view::widgets::ToastTone::Default, 4200);
+                return;
+            }
+            default:
+                return;
+        }
+    }
+
+    void show_network_interfaces() {
+        const auto interfaces = platform::list_network_interfaces();
+        if (interfaces.empty()) {
+            toast_->show("No network interfaces found",
+                         view::widgets::ToastTone::Warning,
+                         3200);
+            return;
+        }
+
+        std::string message = "Interfaces";
+        const std::size_t count = std::min<std::size_t>(interfaces.size(), 4);
+        for (std::size_t index = 0; index < count; ++index) {
+            message += "\n" + interfaces[index].name +
+                       (interfaces[index].connected ? "  up" : "  down");
+        }
         toast_->show(message, view::widgets::ToastTone::Default, 5200);
     }
 
@@ -392,6 +504,59 @@ private:
                                 show_uptime();
                                 break;
                             default:
+                                break;
+                        }
+                        return true;
+                    }
+                    if (view_model_.current_page() == model::AppPage::Butter) {
+                        show_system_status(view_model_.tool_selection());
+                        return true;
+                    }
+                    if (view_model_.current_page() == model::AppPage::Network) {
+                        switch (view_model_.tool_selection()) {
+                            case 0:
+                                show_network_interfaces();
+                                break;
+                            case 1: {
+                                const std::string gateway = platform::default_gateway();
+                                toast_->show("Default gateway\n" + gateway,
+                                             gateway == "No gateway"
+                                                 ? view::widgets::ToastTone::Warning
+                                                 : view::widgets::ToastTone::Default,
+                                             4200);
+                                break;
+                            }
+                            case 4:
+                                toast_->show("Port scanning is disabled",
+                                             view::widgets::ToastTone::Warning,
+                                             3200);
+                                break;
+                            default:
+                                toast_->show("This network action is unavailable",
+                                             view::widgets::ToastTone::Warning,
+                                             3200);
+                                break;
+                        }
+                        return true;
+                    }
+                    if (view_model_.current_page() == model::AppPage::Wireless) {
+                        switch (view_model_.tool_selection()) {
+                            case 0:
+                            case 1:
+                                show_system_status(1);
+                                break;
+                            case 2:
+                                show_system_status(2);
+                                break;
+                            case 3:
+                                toast_->show("GATT access is unavailable",
+                                             view::widgets::ToastTone::Warning,
+                                             3200);
+                                break;
+                            case 4:
+                                toast_->show("No supported radio tools are enabled",
+                                             view::widgets::ToastTone::Warning,
+                                             3200);
                                 break;
                         }
                         return true;

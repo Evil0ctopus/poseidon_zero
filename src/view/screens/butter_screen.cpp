@@ -241,15 +241,15 @@ void ButterScreen::build_content(lv_obj_t* content) {
                       "Gateway  %s",
                       gateway.c_str());
         tools[1] = gateway_summary;
-        tools[2] = "Ping  host";
-        tools[3] = "DNS  lookup";
-        tools[4] = "Port  TCP scan";
+        tools[2] = "Ping  unavailable";
+        tools[3] = "DNS  unavailable";
+        tools[4] = "Port scan  disabled";
     } else if (view_model().current_page() == model::AppPage::Wireless) {
         tools[0] = wifi.present ? "Wi-Fi  available" : "Wi-Fi  unavailable";
         tools[1] = wifi.present ? "Signal  available" : "Signal  unavailable";
-        tools[2] = bluetooth.present ? "BLE  available" : "BLE  unavailable";
-        tools[3] = "GATT  safe tools";
-        tools[4] = "Radio  capability gate";
+        tools[2] = bluetooth.present ? "Bluetooth  available" : "Bluetooth  unavailable";
+        tools[3] = "GATT  unavailable";
+        tools[4] = "Radio tools  disabled";
     }
     lv_obj_t* row_objects[5] = {};
     for (int32_t index = 0; index < 5; ++index) {
