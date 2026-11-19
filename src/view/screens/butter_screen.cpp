@@ -21,6 +21,52 @@
 #include <string>
 
 namespace screen {
+namespace {
+
+struct ToolSelectionBinding {
+    lv_obj_t* rows[5]{};
+    viewmodel::BaseViewModel* view_model{nullptr};
+};
+
+void cleanup_tool_selection(lv_event_t* event) {
+    delete static_cast<ToolSelectionBinding*>(lv_event_get_user_data(event));
+}
+
+void tool_selection_observer(lv_observer_t* observer, lv_subject_t* subject) {
+    auto* binding = static_cast<ToolSelectionBinding*>(lv_observer_get_user_data(observer));
+    if (!binding) {
+        return;
+    }
+
+    const int32_t selected = lv_subject_get_int(subject);
+    for (int32_t index = 0; index < 5; ++index) {
+        if (!lv_obj_is_valid(binding->rows[index])) {
+            continue;
+        }
+        lv_obj_set_style_border_color(
+            binding->rows[index],
+            index == selected ? lv_color_hex(view::color::dark::kPrimary)
+                              : lv_color_hex(view::color::dark::kBorder),
+            0);
+    }
+}
+
+void tool_row_clicked(lv_event_t* event) {
+    auto* binding = static_cast<ToolSelectionBinding*>(lv_event_get_user_data(event));
+    auto* row = lv_event_get_target(event);
+    if (!binding || !binding->view_model) {
+        return;
+    }
+
+    for (int32_t index = 0; index < 5; ++index) {
+        if (binding->rows[index] == row) {
+            binding->view_model->set_tool_selection(index);
+            return;
+        }
+    }
+}
+
+} // namespace
 
 ButterScreen::ButterScreen(viewmodel::BaseViewModel& view_model, app::AssetManager& assets)
     : BaseScreen(view_model, assets) {
@@ -229,11 +275,22 @@ void ButterScreen::build_content(lv_obj_t* content) {
         reactive::bind_theme(label, view_model().dark_mode_subject(), reactive::ThemeRole::Text);
         lv_obj_set_style_border_color(
             row,
-            index == view_model().tool_selection()
-                ? lv_color_hex(view::color::dark::kPrimary)
-                : lv_color_hex(view::color::dark::kBorder),
+            index == view_model().tool_selection() ? lv_color_hex(view::color::dark::kPrimary)
+                                                   : lv_color_hex(view::color::dark::kBorder),
             0);
     }
+
+    auto* binding = new ToolSelectionBinding{};
+    binding->view_model = &view_model();
+    for (int32_t index = 0; index < 5; ++index) {
+        binding->rows[index] = row_objects[index];
+        lv_obj_add_event_cb(row_objects[index], tool_row_clicked, LV_EVENT_CLICKED, binding);
+    }
+    lv_obj_add_event_cb(content, cleanup_tool_selection, LV_EVENT_DELETE, binding);
+    lv_subject_add_observer_obj(view_model().tool_selection_subject(),
+                                tool_selection_observer,
+                                content,
+                                binding);
 }
 
 } // namespace screen

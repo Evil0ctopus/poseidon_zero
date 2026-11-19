@@ -28,9 +28,10 @@ jobs:
 
       - name: Inspect ARM64 package
         run: |
-          test -n "$(find dist -maxdepth 1 -name 'POSEIDON-Zero_*_arm64.deb' -print -quit)"
-          dpkg-deb --info "$(find dist -maxdepth 1 -name 'POSEIDON-Zero_*_arm64.deb' -print -quit)"
-          dpkg-deb --contents "$(find dist -maxdepth 1 -name 'POSEIDON-Zero_*_arm64.deb' -print -quit)"
+          package="$(find dist -maxdepth 1 -name 'poseidon-zero_*_arm64.deb' -print -quit)"
+          test -n "$package"
+          dpkg-deb --info "$package"
+          dpkg-deb --contents "$package"
 
       - name: Upload ARM64 package
         uses: actions/upload-artifact@v4

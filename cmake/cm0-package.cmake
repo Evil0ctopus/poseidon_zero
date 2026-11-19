@@ -7,6 +7,7 @@
 include(GNUInstallDirs)
 
 set(APP_DISPLAY_NAME "POSEIDON-Zero" CACHE STRING "Human-readable application name used by launchers and package filename")
+set(APP_DEBIAN_PACKAGE_NAME "poseidon-zero" CACHE STRING "Stable Debian and store package identifier")
 set(APP_DEBIAN_REVISION "rev1" CACHE STRING "Debian package revision/vendor suffix")
 set(APP_DEBIAN_ARCHITECTURE "arm64" CACHE STRING "Debian package architecture")
 # Deliberately a placeholder: the store rejects packages whose Maintainer is
@@ -14,6 +15,10 @@ set(APP_DEBIAN_ARCHITECTURE "arm64" CACHE STRING "Debian package architecture")
 set(APP_MAINTAINER "POSEIDON Project <noreply@github.com>" CACHE STRING "Debian package maintainer")
 set(APP_PACKAGE_DESCRIPTION "POSEIDON-style portable Linux research and operations application" CACHE STRING "Debian package summary")
 set(APP_INSTALL_SYSTEMD_SERVICE OFF CACHE BOOL "Install a systemd service file for embedded deployments")
+
+if(NOT APP_DEBIAN_PACKAGE_NAME MATCHES "^[a-z0-9][a-z0-9.+-]*$")
+    message(FATAL_ERROR "APP_DEBIAN_PACKAGE_NAME must be a valid lowercase Debian package name")
+endif()
 
 set(APP_GENERATED_DIR "${CMAKE_CURRENT_BINARY_DIR}/generated/package")
 configure_file(
@@ -82,11 +87,9 @@ set(CPACK_PACKAGE_VENDOR "${APP_MAINTAINER}")
 set(CPACK_PACKAGE_CONTACT "${APP_MAINTAINER}")
 set(CPACK_PACKAGE_DESCRIPTION_SUMMARY "${APP_PACKAGE_DESCRIPTION}")
 set(CPACK_PACKAGE_VERSION "${PROJECT_VERSION}")
-set(CPACK_PACKAGE_FILE_NAME "${APP_DISPLAY_NAME}_${PROJECT_VERSION}_${APP_DEBIAN_REVISION}_${APP_DEBIAN_ARCHITECTURE}")
+set(CPACK_PACKAGE_FILE_NAME "${APP_DEBIAN_PACKAGE_NAME}_${PROJECT_VERSION}-${APP_DEBIAN_REVISION}_${APP_DEBIAN_ARCHITECTURE}")
 set(CPACK_RESOURCE_FILE_LICENSE "${CMAKE_CURRENT_SOURCE_DIR}/assets/fonts/LICENSE.txt")
 
-string(TOLOWER "${APP_DISPLAY_NAME}" APP_DEBIAN_PACKAGE_NAME)
-string(REGEX REPLACE "[^a-z0-9+.-]" "-" APP_DEBIAN_PACKAGE_NAME "${APP_DEBIAN_PACKAGE_NAME}")
 set(CPACK_DEBIAN_PACKAGE_NAME "${APP_DEBIAN_PACKAGE_NAME}")
 set(CPACK_DEBIAN_PACKAGE_VERSION "${PROJECT_VERSION}")
 set(CPACK_DEBIAN_PACKAGE_RELEASE "${APP_DEBIAN_REVISION}")

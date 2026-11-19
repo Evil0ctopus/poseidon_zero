@@ -2,29 +2,29 @@
   "app_name": "POSEIDON-Zero",
   "package_name": "poseidon-zero",
   "version": "0.7.0",
-  "description": "POSEIDON-style portable Linux operations application for CardputerZero",
+  "description": "Keyboard-first system diagnostics and local utilities for CardputerZero",
 
   "store": {
-    "summary": "Keyboard-first Linux operations and research application",
-    "description": "A CardputerZero-native application for portable operations, networking, and authorized hardware research.",
-    "categories": ["Utilities", "Development"],
+    "summary": "Keyboard-first system diagnostics and local utilities for CardputerZero",
+    "description": "POSEIDON-Zero provides a compact interface to CardputerZero system status, local utilities, and network information.",
+    "categories": ["System Tools"],
     "screenshots": [
-      "screenshot/app-simulator-dark-darwin.png",
-      "screenshot/app-simulator-light-darwin.png"
+      "screenshot/poseidon-zero-dark-320x170.png",
+      "screenshot/poseidon-zero-light-320x170.png"
     ],
-    "icon": "assets/images/template.png",
+    "icon": "assets/images/poseidon-zero-icon.png",
     "license": "MIT",
     "source_repo": "https://github.com/Evil0ctopus/poseidon_zero",
     "author": { "github": "Evil0ctopus", "display_name": "Evil0ctopus" },
-    "share_code": "poseidon-zero",
+    "share_code": "",
     "permissions": {
       "camera": false,
       "microphone": false,
       "imu": false,
       "network": true,
-      "additional_hardware": true,
+      "additional_hardware": false,
       "background_service": false,
-      "external_display": true
+      "external_display": false
     }
   }
 }

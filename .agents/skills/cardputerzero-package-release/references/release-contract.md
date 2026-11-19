@@ -8,7 +8,7 @@ Use repository presets rather than custom build directories:
   `win32-mingw64`;
 - device presets: `cp0-native` and `cp0-cross`;
 - release workflow: `cp0-cross-package`;
-- Debian package output: `dist/<APP_DISPLAY_NAME>_<version>_<revision>_arm64.deb`.
+- Debian package output: `dist/<package_name>_<version>-<revision>_arm64.deb`.
 
 `cmake/cm0-package.cmake` is the installation/package contract. `app-builder.json` is the final
 upload/store contract. Neither replaces the other.
@@ -22,7 +22,7 @@ the store's CI validates.
 | Field | Release rule |
 | --- | --- |
 | `app_name` | User-facing app name; becomes the store display title. |
-| `package_name` | Stable upload/application identifier; currently expected to match the CMake project name. Must be a valid Debian package name when published (lowercase letters, digits, `.+-`). |
+| `package_name` | Stable upload/application identifier; must match the Debian package control name and use lowercase letters, digits, `.+-`. It need not match the executable/CMake target name. |
 | `version` | Must match `project(... VERSION ...)`. |
 | `store.summary` | One-line store summary (required). |
 | `store.description` | Longer store description (optional). |
@@ -34,10 +34,14 @@ the store's CI validates.
 | `store.author` | Object with required `display_name`; `github`, `email`, `website` optional. |
 | `store.source_repo` | Actual source repository for this application. |
 | `store.license` | SPDX license identifier (e.g. `MIT`, `GPL-3.0-only`). |
-| `store.share_code` | 4-char A–Z/0–9 code, globally unique in the store; do not invent or rotate it after first publish. |
+| `store.share_code` | Exactly 4 uppercase letters/digits, globally unique in the store; confirm availability before release and do not rotate after first publish. |
 
 The current permission keys are `camera`, `microphone`, `imu`, `network`,
 `additional_hardware`, `background_service`, and `external_display`.
+
+The store requires a first-time package submission to include a short demo video in its pull
+request. Apps that run with root privileges are not accepted. The package filename must follow
+`<package_name>_<version>-<revision>_arm64.deb`.
 
 The template ships deliberately invalid `TODO:` placeholders in the `store`
 section and a placeholder `APP_MAINTAINER` in `cmake/cm0-package.cmake`. The
