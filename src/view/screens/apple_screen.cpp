@@ -132,7 +132,7 @@ void AppleScreen::build_content(lv_obj_t* content) {
         lv_label_set_text(shortcut, "ENTER");
         lv_obj_set_style_text_font(shortcut, key_font ? key_font : &lv_font_montserrat_10, 0);
         lv_obj_align(shortcut, LV_ALIGN_RIGHT_MID, -5, 0);
-        reactive::bind_theme(shortcut, view_model().dark_mode_subject(), reactive::ThemeRole::TextDisabled);
+        reactive::bind_theme(shortcut, view_model().dark_mode_subject(), reactive::ThemeRole::Text);
     }
 
     const int32_t selected = view_model().menu_selection();
