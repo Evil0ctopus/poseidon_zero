@@ -1,0 +1,30 @@
+{
+  "app_name": "POSEIDON-Zero",
+  "package_name": "poseidon-zero",
+  "version": "0.1.0",
+  "description": "POSEIDON-style portable Linux operations application for CardputerZero",
+
+  "store": {
+    "summary": "Keyboard-first Linux operations and research application",
+    "description": "A CardputerZero-native application for portable operations, networking, and authorized hardware research.",
+    "categories": ["Utilities", "Development"],
+    "screenshots": [
+      "screenshot/app-simulator-dark-darwin.png",
+      "screenshot/app-simulator-light-darwin.png"
+    ],
+    "icon": "assets/images/template.png",
+    "license": "MIT",
+    "source_repo": "https://github.com/Evil0ctopus/poseidon_zero",
+    "author": { "github": "Evil0ctopus", "display_name": "Evil0ctopus" },
+    "share_code": "poseidon-zero",
+    "permissions": {
+      "camera": false,
+      "microphone": false,
+      "imu": false,
+      "network": false,
+      "additional_hardware": false,
+      "background_service": false,
+      "external_display": false
+    }
+  }
+}
