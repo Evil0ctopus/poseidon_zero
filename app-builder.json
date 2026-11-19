@@ -1,7 +1,7 @@
 {
   "app_name": "POSEIDON-Zero",
   "package_name": "poseidon-zero",
-  "version": "0.4.0",
+  "version": "0.5.0",
   "description": "POSEIDON-style portable Linux operations application for CardputerZero",
 
   "store": {
@@ -21,10 +21,10 @@
       "camera": false,
       "microphone": false,
       "imu": false,
-      "network": false,
-      "additional_hardware": false,
+      "network": true,
+      "additional_hardware": true,
       "background_service": false,
-      "external_display": false
+      "external_display": true
     }
   }
 }
