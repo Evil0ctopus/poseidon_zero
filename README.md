@@ -421,6 +421,9 @@ The first page bottom nav bar maps hardware/keyboard keys from left to right:
 | `8` | Fifth icon button |
 | `ESC` | First icon button / quit |
 
+On the home menu, `Up`/`F` and `Down`/`X` move between rows; `Left` and `Right` select
+within a row. Click a category to select it, then press `ENTER` to open it.
+
 The counter page uses direct keyboard shortcuts:
 
 | Key | Action |

@@ -56,14 +56,14 @@ FeatureList expansion_features() {
 
 FeatureList tools_features() {
     return {{
-        {"File browser", "Browse, preview, copy, and view local files", FeatureRisk::Safe, true},
-        {"Calculator", "Local calculator", FeatureRisk::Safe, false},
+        {"Files", "Count entries in the home and media folders", FeatureRisk::Safe, true},
+        {"Calculator", "Local arithmetic calculator", FeatureRisk::Safe, true},
+        {"Clock", "Display local system time", FeatureRisk::Safe, true},
+        {"Morse", "Generate or decode Morse", FeatureRisk::Safe, true},
+        {"Uptime", "Display system uptime", FeatureRisk::Safe, true},
         {"Stopwatch", "Local timer", FeatureRisk::Safe, false},
-        {"Morse", "Generate or decode Morse", FeatureRisk::Safe, false},
-        {"MAC lookup", "Identify vendor from captured OUI", FeatureRisk::Safe, true},
-        {"Clock", "Display RTC and system time", FeatureRisk::Safe, true},
-        {"Memory", "Monitor available RAM and limits", FeatureRisk::Safe, true},
-        {"Diagnostics", "Export sanitized support status", FeatureRisk::Safe, true},
+        {"MAC lookup", "Identify vendor from captured OUI", FeatureRisk::Safe, false},
+        {"Diagnostics", "Export sanitized support status", FeatureRisk::Safe, false},
     }};
 }
 

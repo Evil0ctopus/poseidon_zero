@@ -298,13 +298,26 @@ private:
         if (view_model_.current_page() == model::AppPage::Apple) {
             if (key == LV_KEY_UP || key == 'f') {
                 if (!long_pressed) {
-                    view_model_.move_menu_selection(-1);
+                    view_model_.move_menu_selection(-2);
                 }
                 return true;
             }
             if (key == LV_KEY_DOWN || key == 'x') {
                 if (!long_pressed) {
-                    view_model_.move_menu_selection(1);
+                    view_model_.move_menu_selection(2);
+                }
+                return true;
+            }
+            if (key == LV_KEY_LEFT || key == LV_KEY_RIGHT) {
+                if (!long_pressed) {
+                    const int32_t selection = view_model_.menu_selection();
+                    if (key == LV_KEY_LEFT && selection % 2 == 1) {
+                        view_model_.set_menu_selection(selection - 1);
+                    }
+                    else if (key == LV_KEY_RIGHT && selection % 2 == 0 &&
+                             selection < 6) {
+                        view_model_.set_menu_selection(selection + 1);
+                    }
                 }
                 return true;
             }

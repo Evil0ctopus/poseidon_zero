@@ -16,10 +16,26 @@ namespace {
 
 struct MenuSelectionBinding {
     lv_obj_t* rows[7];
+    viewmodel::BaseViewModel* view_model;
 };
 
 void cleanup_menu_selection(lv_event_t* event) {
     delete static_cast<MenuSelectionBinding*>(lv_event_get_user_data(event));
+}
+
+void menu_row_clicked(lv_event_t* event) {
+    auto* binding = static_cast<MenuSelectionBinding*>(lv_event_get_user_data(event));
+    if (!binding || !binding->view_model) {
+        return;
+    }
+
+    auto* row = lv_event_get_target(event);
+    for (int32_t index = 0; index < 7; ++index) {
+        if (binding->rows[index] == row) {
+            binding->view_model->set_menu_selection(index);
+            return;
+        }
+    }
 }
 
 void menu_selection_observer(lv_observer_t* observer, lv_subject_t* subject) {
@@ -91,10 +107,10 @@ AppleScreen::AppleScreen(viewmodel::BaseViewModel& view_model, app::AssetManager
 void AppleScreen::build_content(lv_obj_t* content) {
     lv_obj_set_flex_flow(content, LV_FLEX_FLOW_COLUMN);
     lv_obj_set_flex_align(content, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
-    lv_obj_set_style_pad_top(content, 5, 0);
-    lv_obj_set_style_pad_row(content, 3, 0);
+    lv_obj_set_style_pad_top(content, 4, 0);
+    lv_obj_set_style_pad_row(content, 2, 0);
 
-    const lv_font_t* title_font = assets().load_standard_font(15);
+    const lv_font_t* title_font = assets().load_standard_font(14);
     const lv_font_t* label_font = assets().load_standard_font(12, app::StandardFontWeight::Regular);
     const lv_font_t* key_font = assets().load_standard_font(11, app::StandardFontWeight::Regular);
 
@@ -102,6 +118,15 @@ void AppleScreen::build_content(lv_obj_t* content) {
     lv_label_set_text(heading, "AUTHORIZED OPERATIONS");
     lv_obj_set_style_text_font(heading, title_font ? title_font : &lv_font_montserrat_14, 0);
     reactive::bind_theme(heading, view_model().dark_mode_subject(), reactive::ThemeRole::Text);
+
+    auto* grid = lv_obj_create(content);
+    lv_obj_remove_style_all(grid);
+    lv_obj_set_size(grid, 300, 80);
+    lv_obj_set_flex_flow(grid, LV_FLEX_FLOW_ROW_WRAP);
+    lv_obj_set_flex_align(grid, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_START);
+    lv_obj_set_style_pad_row(grid, 2, 0);
+    lv_obj_set_style_pad_column(grid, 6, 0);
+    lv_obj_clear_flag(grid, LV_OBJ_FLAG_SCROLLABLE);
 
     const char* categories[] = {
         "1  NETWORK",
@@ -112,17 +137,19 @@ void AppleScreen::build_content(lv_obj_t* content) {
         "6  TOOLS",
         "7  MEDIA",
     };
-    lv_obj_t* row_objects[7] = {};
+    auto* binding = new MenuSelectionBinding{};
+    binding->view_model = &view_model();
     for (int32_t index = 0; index < 7; ++index) {
-        auto* row = lv_button_create(content);
-        row_objects[index] = row;
+        auto* row = lv_button_create(grid);
+        binding->rows[index] = row;
         lv_obj_remove_style_all(row);
-        lv_obj_set_size(row, 270, 18);
+        lv_obj_set_size(row, 142, 18);
         lv_obj_set_style_radius(row, 3, 0);
         lv_obj_set_style_border_width(row, 1, 0);
         lv_obj_set_style_pad_left(row, 7, 0);
         lv_obj_set_style_bg_opa(row, LV_OPA_COVER, 0);
         reactive::bind_theme(row, view_model().dark_mode_subject(), reactive::ThemeRole::Button);
+        lv_obj_add_event_cb(row, menu_row_clicked, LV_EVENT_CLICKED, binding);
 
         auto* label = lv_label_create(row);
         lv_label_set_text(label, categories[index]);
@@ -140,16 +167,12 @@ void AppleScreen::build_content(lv_obj_t* content) {
     const int32_t selected = view_model().menu_selection();
     for (int32_t index = 0; index < 7; ++index) {
         lv_obj_set_style_border_color(
-            row_objects[index],
+            binding->rows[index],
             index == selected ? lv_color_hex(view::color::dark::kPrimary)
                               : lv_color_hex(view::color::dark::kBorder),
             0);
     }
 
-    auto* binding = new MenuSelectionBinding{};
-    for (int32_t index = 0; index < 7; ++index) {
-        binding->rows[index] = row_objects[index];
-    }
     lv_obj_add_event_cb(content, cleanup_menu_selection, LV_EVENT_DELETE, binding);
     lv_subject_add_observer_obj(view_model().menu_selection_subject(),
                                 menu_selection_observer,
