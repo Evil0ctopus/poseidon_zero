@@ -92,6 +92,26 @@ void BaseViewModel::show_butter_page() {
     publish_all();
 }
 
+void BaseViewModel::show_network_page() {
+    model_.set_current_page(model::AppPage::Network);
+    publish_all();
+}
+
+void BaseViewModel::show_wireless_page() {
+    model_.set_current_page(model::AppPage::Wireless);
+    publish_all();
+}
+
+void BaseViewModel::show_infrared_page() {
+    model_.set_current_page(model::AppPage::Infrared);
+    publish_all();
+}
+
+void BaseViewModel::show_expansion_page() {
+    model_.set_current_page(model::AppPage::Expansion);
+    publish_all();
+}
+
 void BaseViewModel::toggle_page() {
     model_.toggle_page();
     publish_all();

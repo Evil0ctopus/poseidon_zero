@@ -61,7 +61,7 @@ void ScreenManager::show_apple_screen() {
 
 void ScreenManager::show_butter_screen() {
     load_screen(std::make_unique<screen::ButterScreen>(view_model_, assets_));
-    loaded_page_ = model::AppPage::Butter;
+    loaded_page_ = view_model_.current_page();
     has_loaded_page_ = true;
 }
 
@@ -83,6 +83,13 @@ void ScreenManager::flush_requested_page() {
     }
 
     if (requested_page_ == model::AppPage::Butter) {
+        show_butter_screen();
+        return;
+    }
+    if (requested_page_ == model::AppPage::Network ||
+        requested_page_ == model::AppPage::Wireless ||
+        requested_page_ == model::AppPage::Infrared ||
+        requested_page_ == model::AppPage::Expansion) {
         show_butter_screen();
         return;
     }

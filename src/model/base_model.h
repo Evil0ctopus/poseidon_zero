@@ -13,6 +13,10 @@ namespace model {
 enum class AppPage {
     Apple  = 0,
     Butter = 1,
+    Network = 2,
+    Wireless = 3,
+    Infrared = 4,
+    Expansion = 5,
 };
 
 class BaseModel {

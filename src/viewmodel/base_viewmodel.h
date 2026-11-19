@@ -38,6 +38,10 @@ public:
     model::AppPage current_page() const;
     void show_apple_page();
     void show_butter_page();
+    void show_network_page();
+    void show_wireless_page();
+    void show_infrared_page();
+    void show_expansion_page();
     void toggle_page();
     void increment_counter();
     void decrement_counter();

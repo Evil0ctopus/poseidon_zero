@@ -10,6 +10,7 @@
 #include "bindings.h"
 #include "capabilities.h"
 #include "memory_status.h"
+#include "linux_network.h"
 #include "theme.h"
 #include "ui_const.h"
 #include <cstdio>
@@ -29,7 +30,53 @@ void ButterScreen::build_content(lv_obj_t* content) {
     lv_obj_set_style_pad_row(content, 3, 0);
 
     auto* heading = lv_label_create(content);
-    lv_label_set_text(heading, "SYSTEM TOOLS");
+    const char* title = "SYSTEM TOOLS";
+    const char* tools[5] = {
+        "Display",
+        "Memory",
+        "Storage",
+        "Network",
+        "Diagnostics",
+    };
+
+    switch (view_model().current_page()) {
+        case model::AppPage::Network:
+            title = "NETWORK";
+            tools[0] = "Interfaces";
+            tools[1] = "Host discovery";
+            tools[2] = "Ping";
+            tools[3] = "DNS lookup";
+            tools[4] = "Port scan";
+            break;
+        case model::AppPage::Wireless:
+            title = "WIRELESS";
+            tools[0] = "Wi-Fi scan";
+            tools[1] = "Signal status";
+            tools[2] = "BLE devices";
+            tools[3] = "GATT tools";
+            tools[4] = "Capability gate";
+            break;
+        case model::AppPage::Infrared:
+            title = "INFRARED";
+            tools[0] = "Transmit";
+            tools[1] = "Receive";
+            tools[2] = "Record";
+            tools[3] = "Replay";
+            tools[4] = "Safety gate";
+            break;
+        case model::AppPage::Expansion:
+            title = "EXPANSION";
+            tools[0] = "Grove I2C";
+            tools[1] = "UART";
+            tools[2] = "SPI";
+            tools[3] = "GPIO";
+            tools[4] = "LoRa / radio hats";
+            break;
+        default:
+            break;
+    }
+
+    lv_label_set_text(heading, title);
     const lv_font_t* heading_font = assets().load_standard_font(15);
     lv_obj_set_style_text_font(heading,
                                heading_font ? heading_font : &lv_font_montserrat_14,
@@ -53,13 +100,29 @@ void ButterScreen::build_content(lv_obj_t* content) {
         std::snprintf(memory_text, sizeof(memory_text), "Memory  unavailable");
     }
 
-    const char* tools[] = {
-        memory_text,
-        wifi.present ? "Wi-Fi  available" : "Wi-Fi  unavailable",
-        bluetooth.present ? "Bluetooth  available" : "Bluetooth  unavailable",
-        ethernet.present ? "Ethernet  available" : "Ethernet  unavailable",
-        audio.present ? "Audio  available" : "Audio  unavailable",
-    };
+    if (view_model().current_page() == model::AppPage::Butter) {
+        tools[0] = memory_text;
+        tools[1] = wifi.present ? "Wi-Fi  available" : "Wi-Fi  unavailable";
+        tools[2] = bluetooth.present ? "Bluetooth  available" : "Bluetooth  unavailable";
+        tools[3] = ethernet.present ? "Ethernet  available" : "Ethernet  unavailable";
+        tools[4] = audio.present ? "Audio  available" : "Audio  unavailable";
+    } else if (view_model().current_page() == model::AppPage::Network) {
+        const auto interfaces = platform::list_network_interfaces();
+        tools[0] = interfaces.empty() ? "No network interfaces" : "Interfaces  available";
+        tools[1] = "Host discovery  /24";
+        tools[2] = "Ping  host";
+        tools[3] = "DNS  lookup";
+        tools[4] = "Port  TCP scan";
+    } else if (view_model().current_page() == model::AppPage::Wireless) {
+        const auto networks = platform::scan_wifi_networks();
+        char wifi_count[32];
+        std::snprintf(wifi_count, sizeof(wifi_count), "Wi-Fi  %zu networks", networks.size());
+        tools[0] = wifi_count;
+        tools[1] = wifi.present ? "Signal  available" : "Signal  unavailable";
+        tools[2] = bluetooth.present ? "BLE  available" : "BLE  unavailable";
+        tools[3] = "GATT  safe tools";
+        tools[4] = "Radio  capability gate";
+    }
     for (const char* tool : tools) {
         auto* row = lv_button_create(content);
         lv_obj_remove_style_all(row);

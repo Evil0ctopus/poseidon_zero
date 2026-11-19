@@ -43,6 +43,7 @@ void BaseModel::toggle_page() {
     current_page_ = current_page_ == AppPage::Apple ? AppPage::Butter : AppPage::Apple;
 }
 
+
 int32_t BaseModel::menu_selection() const {
     return menu_selection_;
 }

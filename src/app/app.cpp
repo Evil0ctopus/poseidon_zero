@@ -143,12 +143,22 @@ private:
             if (key == LV_KEY_ENTER) {
                 if (!long_pressed) {
                     const int32_t selection = view_model_.menu_selection();
-                    if (selection == 4) {
-                        view_model_.show_butter_page();
-                    } else {
-                        toast_->show("No module loaded in this build",
-                                     view::widgets::ToastTone::Warning,
-                                     2200);
+                    switch (selection) {
+                        case 0:
+                            view_model_.show_network_page();
+                            break;
+                        case 1:
+                            view_model_.show_wireless_page();
+                            break;
+                        case 2:
+                            view_model_.show_infrared_page();
+                            break;
+                        case 3:
+                            view_model_.show_expansion_page();
+                            break;
+                        case 4:
+                            view_model_.show_butter_page();
+                            break;
                     }
                 }
                 return true;
@@ -233,7 +243,7 @@ private:
         if (exit_armed_) {
             toast_->hide();
         } else if (key == LV_KEY_ESC &&
-                   view_model_.current_page() == model::AppPage::Butter) {
+                   view_model_.current_page() != model::AppPage::Apple) {
             view_model_.show_apple_page();
         }
         exit_key_pressed_ = 0;
