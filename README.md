@@ -429,6 +429,18 @@ The counter page uses direct keyboard shortcuts:
 | `Left` | Decrease the counter |
 | `Right` | Increase the counter |
 
+### Calculator
+
+Open **Tools**, select **Calculator**, and press `ENTER`. Type an arithmetic expression using
+digits, decimal points, `+`, `-`, `*`, `/`, and parentheses. Press `ENTER` to calculate,
+`BACKSPACE` to edit, or `ESC` to cancel. Expressions are limited to 64 characters.
+
+### Morse
+
+Open **Tools**, select **Morse**, and press `ENTER`. Type letters and spaces to encode them;
+prefix Morse code with `/` to decode it (for example, `/... --- ...`). Press `ENTER` to run,
+`BACKSPACE` to edit, or `ESC` to cancel.
+
 ### Adding a Screen
 
 1. Add a new page enum value in `src/model/base_model.h`.

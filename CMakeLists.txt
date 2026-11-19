@@ -631,3 +631,16 @@ target_link_libraries(${PROJECT_NAME}
 
 # Package deb
 include(cmake/cm0-package.cmake)
+
+include(CTest)
+if(USE_DESKTOP AND BUILD_TESTING)
+    add_executable(poseidon_safe_tools_tests
+        tests/safe_tools_test.cpp
+        src/platform/safe_tools.cpp
+    )
+    target_include_directories(poseidon_safe_tools_tests
+        PRIVATE
+            "${CMAKE_CURRENT_SOURCE_DIR}/src/platform"
+    )
+    add_test(NAME safe-tools COMMAND poseidon_safe_tools_tests)
+endif()

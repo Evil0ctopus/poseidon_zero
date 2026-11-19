@@ -2,6 +2,7 @@
 
 #include <cctype>
 #include <chrono>
+#include <cmath>
 #include <cstdio>
 #include <cstdlib>
 #include <ctime>
@@ -18,11 +19,15 @@ public:
     double parse(bool& valid) {
         position_ = 0;
         valid = true;
+        if (text_.empty() || text_.size() > 64) {
+            valid = false;
+            return 0.0;
+        }
         const double value = expression(valid);
         while (valid && position_ < text_.size() && std::isspace(static_cast<unsigned char>(text_[position_]))) {
             ++position_;
         }
-        if (position_ != text_.size()) {
+        if (position_ != text_.size() || !std::isfinite(value)) {
             valid = false;
         }
         return valid ? value : 0.0;
@@ -75,6 +80,11 @@ private:
             valid = false;
             return 0.0;
         }
+        if (text_[position_] == '+' || text_[position_] == '-') {
+            const char sign = text_[position_++];
+            const double value = factor(valid);
+            return sign == '-' ? -value : value;
+        }
         if (text_[position_] == '(') {
             ++position_;
             const double value = expression(valid);
@@ -86,20 +96,30 @@ private:
             ++position_;
             return value;
         }
-        if (!std::isdigit(static_cast<unsigned char>(text_[position_]))) {
+
+        std::size_t end = position_;
+        bool has_digit = false;
+        while (end < text_.size() && std::isdigit(static_cast<unsigned char>(text_[end]))) {
+            has_digit = true;
+            ++end;
+        }
+        if (end < text_.size() && text_[end] == '.') {
+            ++end;
+            while (end < text_.size() && std::isdigit(static_cast<unsigned char>(text_[end]))) {
+                has_digit = true;
+                ++end;
+            }
+        }
+        if (!has_digit) {
             valid = false;
             return 0.0;
         }
-        std::size_t end = position_;
-        while (end < text_.size() &&
-               (std::isdigit(static_cast<unsigned char>(text_[end])) || text_[end] == '.')) {
-            ++end;
-        }
+
         const std::string number = text_.substr(position_, end - position_);
         position_ = end;
         char* stop = nullptr;
         const double value = std::strtod(number.c_str(), &stop);
-        if (!stop || stop == number.c_str()) {
+        if (!stop || stop != number.c_str() + number.size()) {
             valid = false;
         }
         return value;

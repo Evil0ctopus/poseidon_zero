@@ -37,6 +37,10 @@ jobs:
         shell: pwsh
         run: cmake --build --preset win32-msvc-dbg --parallel 2
 
+      - name: Test safe utilities
+        shell: pwsh
+        run: ctest --test-dir build/msvc -C Debug --output-on-failure
+
       - name: Capture store screenshots
         shell: pwsh
         run: .\.github\scripts\capture_store_screenshots.ps1

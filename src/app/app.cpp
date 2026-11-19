@@ -12,12 +12,14 @@
 #include "logger.h"
 #include "linux_input.h"
 #include "screenshot_service.h"
+#include "safe_tools.h"
 #include "screen_manager.h"
 #include "base_viewmodel.h"
 #include "theme.h"
 #include "toast.h"
 
 #include <cstdlib>
+#include <cstdio>
 #include <filesystem>
 #include <memory>
 #include <string>
@@ -126,7 +128,137 @@ public:
     }
 
 private:
+    enum class TextToolMode {
+        None,
+        Calculator,
+        Morse,
+    };
+
+    void show_text_tool_prompt(view::widgets::ToastTone tone =
+                                   view::widgets::ToastTone::Default,
+                               const std::string& notice = {}) {
+        std::string message;
+        if (!notice.empty()) {
+            message = notice + "\n";
+        }
+        if (text_tool_mode_ == TextToolMode::Calculator) {
+            message += "Calc: ";
+            message += text_tool_buffer_.empty() ? "_" : text_tool_buffer_;
+            message += "\nEnter=solve  Esc=cancel";
+        }
+        else {
+            message += "Morse: text or /code";
+            if (!text_tool_buffer_.empty()) {
+                message += "\n" + text_tool_buffer_;
+            }
+            message += "\nEnter=run  Esc=cancel";
+        }
+        toast_->show_persistent(message, tone);
+    }
+
+    void start_text_tool(TextToolMode mode) {
+        text_tool_mode_ = mode;
+        text_tool_buffer_.clear();
+        show_text_tool_prompt();
+    }
+
+    void cancel_text_tool() {
+        text_tool_mode_ = TextToolMode::None;
+        text_tool_buffer_.clear();
+        toast_->hide();
+    }
+
+    bool handle_text_tool_key(uint32_t key, bool long_pressed) {
+        if (long_pressed) {
+            return true;
+        }
+        if (key == LV_KEY_ESC) {
+            cancel_text_tool();
+            return true;
+        }
+        if (key == LV_KEY_ENTER) {
+            if (text_tool_buffer_.empty()) {
+                show_text_tool_prompt(view::widgets::ToastTone::Warning,
+                                      "Enter a value");
+                return true;
+            }
+
+            if (text_tool_mode_ == TextToolMode::Calculator) {
+                bool valid = false;
+                const double result = platform::calculate_expression(text_tool_buffer_, valid);
+                if (!valid) {
+                    show_text_tool_prompt(view::widgets::ToastTone::Error,
+                                          "Invalid expression");
+                    return true;
+                }
+
+                char result_text[48]{};
+                std::snprintf(result_text, sizeof(result_text), "%.10g", result);
+                const std::string message = text_tool_buffer_ + " = " + result_text;
+                cancel_text_tool();
+                toast_->show(message, view::widgets::ToastTone::Success, 4200);
+                return true;
+            }
+
+            const bool decode = text_tool_buffer_.front() == '/';
+            const std::string result =
+                decode ? platform::decode_morse(text_tool_buffer_.substr(1))
+                       : platform::encode_morse(text_tool_buffer_);
+            if (result.empty()) {
+                show_text_tool_prompt(view::widgets::ToastTone::Error,
+                                      "No Morse output");
+                return true;
+            }
+
+            cancel_text_tool();
+            toast_->show_highlighted("Morse: ",
+                                     result,
+                                     "",
+                                     view::widgets::ToastTone::Success,
+                                     6000,
+                                     true);
+            return true;
+        }
+        if (key == LV_KEY_BACKSPACE || key == LV_KEY_DEL) {
+            if (!text_tool_buffer_.empty()) {
+                text_tool_buffer_.pop_back();
+                show_text_tool_prompt();
+            }
+            return true;
+        }
+
+        const bool calculator_input =
+            (key >= '0' && key <= '9') || key == '.' || key == '+' || key == '-' ||
+            key == '*' || key == '/' || key == '(' || key == ')';
+        const bool morse_input =
+            (key >= 'a' && key <= 'z') || (key >= 'A' && key <= 'Z') ||
+            key == ' ' || key == '.' || key == '-' || key == '/';
+        const bool allowed = text_tool_mode_ == TextToolMode::Calculator
+                                 ? calculator_input
+                                 : morse_input;
+        if (allowed) {
+            const std::size_t limit =
+                text_tool_mode_ == TextToolMode::Calculator ? 64 : 48;
+            if (text_tool_buffer_.size() >= limit) {
+                show_text_tool_prompt(view::widgets::ToastTone::Warning,
+                                      "Input limit reached");
+                return true;
+            }
+            text_tool_buffer_.push_back(static_cast<char>(key));
+            show_text_tool_prompt();
+        }
+        return true;
+    }
+
     bool handle_key(uint32_t key, bool long_pressed) {
+        if (text_tool_mode_ != TextToolMode::None && key == platform::kKeyHelp) {
+            cancel_text_tool();
+        }
+        else if (text_tool_mode_ != TextToolMode::None &&
+                 key != platform::kKeyPrintScreen) {
+            return handle_text_tool_key(key, long_pressed);
+        }
+
         if (view_model_.current_page() == model::AppPage::Apple) {
             if (key == LV_KEY_UP || key == 'f') {
                 if (!long_pressed) {
@@ -186,7 +318,17 @@ private:
             }
             if (key == LV_KEY_ENTER) {
                 if (!long_pressed) {
-                    toast_->show("Module action requires confirmation",
+                    if (view_model_.current_page() == model::AppPage::Tools &&
+                        view_model_.tool_selection() == 1) {
+                        start_text_tool(TextToolMode::Calculator);
+                        return true;
+                    }
+                    if (view_model_.current_page() == model::AppPage::Tools &&
+                        view_model_.tool_selection() == 3) {
+                        start_text_tool(TextToolMode::Morse);
+                        return true;
+                    }
+                    toast_->show("This action is not implemented yet",
                                  view::widgets::ToastTone::Warning,
                                  2200);
                 }
@@ -297,6 +439,8 @@ private:
     viewmodel::BaseViewModel& view_model_;
     std::unique_ptr<view::widgets::Toast> toast_;
     std::unique_ptr<view::widgets::HelpPopup> help_popup_;
+    std::string text_tool_buffer_;
+    TextToolMode text_tool_mode_{TextToolMode::None};
     uint32_t exit_key_pressed_{0};
     bool exit_armed_{false};
 };

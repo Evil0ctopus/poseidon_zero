@@ -43,6 +43,8 @@ struct EvdevKeypad {
     int fd{-1};
     lv_indev_state_t state{LV_INDEV_STATE_RELEASED};
     uint32_t key{0};
+    bool shift_pressed{false};
+    bool caps_lock{false};
     bool router_event_pending{false};
     uint32_t router_key{0};
     bool router_pressed{false};
@@ -183,28 +185,106 @@ void key_event_cb(lv_event_t* event) {
 }
 
 #if !USE_DESKTOP
-uint32_t map_evdev_key(uint16_t code) {
+uint32_t map_evdev_key(uint16_t code, bool shift, bool caps_lock) {
     switch (code) {
         case KEY_ESC:
             return LV_KEY_ESC;
+        case KEY_BACKSPACE:
+            return LV_KEY_BACKSPACE;
+        case KEY_DELETE:
+            return LV_KEY_DEL;
+        case KEY_ENTER:
+        case KEY_KPENTER:
+            return LV_KEY_ENTER;
+        case KEY_TAB:
+            return LV_KEY_NEXT;
         case KEY_LEFT:
             return LV_KEY_LEFT;
         case KEY_RIGHT:
             return LV_KEY_RIGHT;
-        case KEY_Z:
-            return 'z';
-        case KEY_C:
-            return 'c';
-        case KEY_4:
+        case KEY_UP:
+            return LV_KEY_UP;
+        case KEY_DOWN:
+            return LV_KEY_DOWN;
+        case KEY_A: return shift != caps_lock ? 'A' : 'a';
+        case KEY_B: return shift != caps_lock ? 'B' : 'b';
+        case KEY_C: return shift != caps_lock ? 'C' : 'c';
+        case KEY_D: return shift != caps_lock ? 'D' : 'd';
+        case KEY_E: return shift != caps_lock ? 'E' : 'e';
+        case KEY_F: return shift != caps_lock ? 'F' : 'f';
+        case KEY_G: return shift != caps_lock ? 'G' : 'g';
+        case KEY_H: return shift != caps_lock ? 'H' : 'h';
+        case KEY_I: return shift != caps_lock ? 'I' : 'i';
+        case KEY_J: return shift != caps_lock ? 'J' : 'j';
+        case KEY_K: return shift != caps_lock ? 'K' : 'k';
+        case KEY_L: return shift != caps_lock ? 'L' : 'l';
+        case KEY_M: return shift != caps_lock ? 'M' : 'm';
+        case KEY_N: return shift != caps_lock ? 'N' : 'n';
+        case KEY_O: return shift != caps_lock ? 'O' : 'o';
+        case KEY_P: return shift != caps_lock ? 'P' : 'p';
+        case KEY_Q: return shift != caps_lock ? 'Q' : 'q';
+        case KEY_R: return shift != caps_lock ? 'R' : 'r';
+        case KEY_S: return shift != caps_lock ? 'S' : 's';
+        case KEY_T: return shift != caps_lock ? 'T' : 't';
+        case KEY_U: return shift != caps_lock ? 'U' : 'u';
+        case KEY_V: return shift != caps_lock ? 'V' : 'v';
+        case KEY_W: return shift != caps_lock ? 'W' : 'w';
+        case KEY_X: return shift != caps_lock ? 'X' : 'x';
+        case KEY_Y: return shift != caps_lock ? 'Y' : 'y';
+        case KEY_Z: return shift != caps_lock ? 'Z' : 'z';
+        case KEY_0: return shift ? ')' : '0';
+        case KEY_1: return shift ? '!' : '1';
+        case KEY_2: return shift ? '@' : '2';
+        case KEY_3: return shift ? '#' : '3';
+        case KEY_4: return shift ? '$' : '4';
+        case KEY_5: return shift ? '%' : '5';
+        case KEY_6: return shift ? '^' : '6';
+        case KEY_7: return shift ? '&' : '7';
+        case KEY_8: return shift ? '*' : '8';
+        case KEY_9: return shift ? '(' : '9';
+        case KEY_MINUS: return shift ? '_' : '-';
+        case KEY_EQUAL: return shift ? '+' : '=';
+        case KEY_LEFTBRACE: return shift ? '{' : '[';
+        case KEY_RIGHTBRACE: return shift ? '}' : ']';
+        case KEY_SEMICOLON: return shift ? ':' : ';';
+        case KEY_APOSTROPHE: return shift ? '"' : '\'';
+        case KEY_GRAVE: return shift ? '~' : '`';
+        case KEY_BACKSLASH: return shift ? '|' : '\\';
+        case KEY_COMMA: return shift ? '<' : ',';
+        case KEY_DOT: return shift ? '>' : '.';
+        case KEY_SLASH: return shift ? '?' : '/';
+        case KEY_SPACE:
+            return ' ';
+        case KEY_KPPLUS:
+            return '+';
+        case KEY_KPMINUS:
+            return '-';
+        case KEY_KPASTERISK:
+            return '*';
+        case KEY_KPSLASH:
+            return '/';
+        case KEY_KPDOT:
+            return '.';
+        case KEY_KP0:
+            return '0';
+        case KEY_KP1:
+            return '1';
+        case KEY_KP2:
+            return '2';
+        case KEY_KP3:
+            return '3';
+        case KEY_KP4:
             return '4';
-        case KEY_5:
+        case KEY_KP5:
             return '5';
-        case KEY_6:
+        case KEY_KP6:
             return '6';
-        case KEY_7:
+        case KEY_KP7:
             return '7';
-        case KEY_8:
+        case KEY_KP8:
             return '8';
+        case KEY_KP9:
+            return '9';
         case KEY_SYSRQ:
             return kKeyPrintScreen;
         case KEY_HELP:
@@ -244,8 +324,23 @@ void evdev_read_cb(lv_indev_t* indev, lv_indev_data_t* data) {
             continue;
         }
 
-        const auto key = map_evdev_key(input.code);
-        if (!key || input.value == 2) {
+        if (input.code == KEY_LEFTSHIFT || input.code == KEY_RIGHTSHIFT) {
+            keypad->shift_pressed = input.value != 0;
+            continue;
+        }
+        if (input.code == KEY_CAPSLOCK) {
+            if (input.value == 1) {
+                keypad->caps_lock = !keypad->caps_lock;
+            }
+            continue;
+        }
+        if (input.value == 2) {
+            continue;
+        }
+
+        const auto key =
+            map_evdev_key(input.code, keypad->shift_pressed, keypad->caps_lock);
+        if (!key) {
             continue;
         }
 
