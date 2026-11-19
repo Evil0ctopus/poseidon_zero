@@ -22,5 +22,7 @@ std::vector<WifiNetwork> scan_wifi_networks();
 std::string ping_host(const std::string& host);
 std::string dns_lookup(const std::string& host);
 std::vector<std::string> scan_bluetooth_devices();
+std::string default_gateway();
+std::vector<std::string> arp_entries();
 
 } // namespace platform

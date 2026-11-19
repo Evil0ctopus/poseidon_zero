@@ -13,6 +13,7 @@
 #include "linux_network.h"
 #include "storage_status.h"
 #include "feature_catalog.h"
+#include "tool_status.h"
 #include "theme.h"
 #include "ui_const.h"
 #include <cstdio>
@@ -40,6 +41,8 @@ void ButterScreen::build_content(lv_obj_t* content) {
         "Network",
         "Diagnostics",
     };
+    char file_summary[40] = "Files";
+    char gateway_summary[64] = "Gateway";
 
     switch (view_model().current_page()) {
         case model::AppPage::Network:
@@ -85,6 +88,13 @@ void ButterScreen::build_content(lv_obj_t* content) {
                 for (int32_t index = 0; index < 5; ++index) {
                     tools[index] = features[index].available ? features[index].name : "Unavailable";
                 }
+                const auto home = platform::list_directory("/home");
+                const auto media = platform::list_directory("/media");
+                std::snprintf(file_summary,
+                              sizeof(file_summary),
+                              "Files  %zu entries",
+                              home.size() + media.size());
+                tools[0] = file_summary;
             }
             break;
         case model::AppPage::Media:
@@ -133,7 +143,12 @@ void ButterScreen::build_content(lv_obj_t* content) {
     } else if (view_model().current_page() == model::AppPage::Network) {
         const auto interfaces = platform::list_network_interfaces();
         tools[0] = interfaces.empty() ? "No network interfaces" : "Interfaces  available";
-        tools[1] = "Host discovery  /24";
+        const auto gateway = platform::default_gateway();
+        std::snprintf(gateway_summary,
+                      sizeof(gateway_summary),
+                      "Gateway  %s",
+                      gateway.c_str());
+        tools[1] = gateway_summary;
         tools[2] = "Ping  host";
         tools[3] = "DNS  lookup";
         tools[4] = "Port  TCP scan";

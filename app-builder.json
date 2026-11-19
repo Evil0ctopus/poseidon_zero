@@ -1,7 +1,7 @@
 {
   "app_name": "POSEIDON-Zero",
   "package_name": "poseidon-zero",
-  "version": "0.3.0",
+  "version": "0.4.0",
   "description": "POSEIDON-style portable Linux operations application for CardputerZero",
 
   "store": {

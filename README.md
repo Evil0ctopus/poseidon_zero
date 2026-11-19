@@ -402,7 +402,7 @@ By default, the debian package is copied to '$HOME' folder, normally it's under 
 On your device, install the copied package with `apt` and replace the package file name with the one you copied:
 
 ```shell
-sudo apt install --no-install-recommends ./POSEIDON-Zero_0.3.0_rev1_arm64.deb
+sudo apt install --no-install-recommends ./POSEIDON-Zero_0.4.0_rev1_arm64.deb
 ```
 
 
@@ -478,7 +478,7 @@ Debian packages are produced with CPack and written to `dist/`. The package file
 Default example:
 
 ```text
-dist/POSEIDON-Zero_0.3.0_rev1_arm64.deb
+dist/POSEIDON-Zero_0.4.0_rev1_arm64.deb
 ```
 
 Package layout:
