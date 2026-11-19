@@ -19,6 +19,8 @@ std::vector<WifiNetwork> scan_wifi_networks() {
 std::string ping_host(const std::string&) { return "Desktop emulator: ping disabled"; }
 std::string dns_lookup(const std::string&) { return "Desktop emulator: DNS disabled"; }
 std::vector<std::string> scan_bluetooth_devices() { return {"Desktop emulator: no BLE data"}; }
+std::string default_gateway() { return "Desktop emulator"; }
+std::vector<std::string> arp_entries() { return {"Desktop emulator"}; }
 }
 #else
 namespace platform {
@@ -114,54 +116,45 @@ std::vector<std::string> scan_bluetooth_devices() {
             if (devices.size() >= 32) {
                 break;
             }
-
-            std::string default_gateway() {
-            #if USE_DESKTOP
-                return "Desktop emulator";
-            #else
-                std::ifstream route("/proc/net/route");
-                std::string line;
-                std::getline(route, line);
-                while (std::getline(route, line)) {
-                    std::istringstream fields(line);
-                    std::string iface;
-                    std::string destination;
-                    std::string gateway;
-                    fields >> iface >> destination >> gateway;
-                    if (destination == "00000000") {
-                        unsigned long raw = std::stoul(gateway, nullptr, 16);
-                        char text[32];
-                        std::snprintf(text, sizeof(text),
-                                      "%lu.%lu.%lu.%lu",
-                                      raw & 0xff,
-                                      (raw >> 8) & 0xff,
-                                      (raw >> 16) & 0xff,
-                                      (raw >> 24) & 0xff);
-                        return text;
-                    }
-                }
-                return "No gateway";
-            #endif
-            }
-
-            std::vector<std::string> arp_entries() {
-                std::vector<std::string> entries;
-            #if USE_DESKTOP
-                entries.push_back("Desktop emulator");
-                return entries;
-            #else
-                std::ifstream arp("/proc/net/arp");
-                std::string line;
-                std::getline(arp, line);
-                while (std::getline(arp, line) && entries.size() < 32) {
-                    entries.push_back(line);
-                }
-                return entries;
-            #endif
-            }
         }
     }
     return devices;
+}
+
+std::string default_gateway() {
+    std::ifstream route("/proc/net/route");
+    std::string line;
+    std::getline(route, line);
+    while (std::getline(route, line)) {
+        std::istringstream fields(line);
+        std::string iface;
+        std::string destination;
+        std::string gateway;
+        fields >> iface >> destination >> gateway;
+        if (destination == "00000000") {
+            unsigned long raw = std::stoul(gateway, nullptr, 16);
+            char text[32];
+            std::snprintf(text, sizeof(text),
+                          "%lu.%lu.%lu.%lu",
+                          raw & 0xff,
+                          (raw >> 8) & 0xff,
+                          (raw >> 16) & 0xff,
+                          (raw >> 24) & 0xff);
+            return text;
+        }
+    }
+    return "No gateway";
+}
+
+std::vector<std::string> arp_entries() {
+    std::vector<std::string> entries;
+    std::ifstream arp("/proc/net/arp");
+    std::string line;
+    std::getline(arp, line);
+    while (std::getline(arp, line) && entries.size() < 32) {
+        entries.push_back(line);
+    }
+    return entries;
 }
 
 } // namespace platform
