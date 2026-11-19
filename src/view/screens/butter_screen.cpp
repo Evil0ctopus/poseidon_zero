@@ -12,6 +12,7 @@
 #include "memory_status.h"
 #include "linux_network.h"
 #include "storage_status.h"
+#include "feature_catalog.h"
 #include "theme.h"
 #include "ui_const.h"
 #include <cstdio>
@@ -43,51 +44,57 @@ void ButterScreen::build_content(lv_obj_t* content) {
     switch (view_model().current_page()) {
         case model::AppPage::Network:
             title = "NETWORK";
-            tools[0] = "Interfaces";
-            tools[1] = "Host discovery";
-            tools[2] = "Ping";
-            tools[3] = "DNS lookup";
-            tools[4] = "Port scan";
+            {
+                const auto features = platform::network_features();
+                for (int32_t index = 0; index < 5; ++index) {
+                    tools[index] = features[index].available ? features[index].name : "Unavailable";
+                }
+            }
             break;
         case model::AppPage::Wireless:
             title = "WIRELESS";
-            tools[0] = "Wi-Fi scan";
-            tools[1] = "Signal status";
-            tools[2] = "BLE devices";
-            tools[3] = "GATT tools";
-            tools[4] = "Capability gate";
+            {
+                const auto features = platform::wireless_features();
+                for (int32_t index = 0; index < 5; ++index) {
+                    tools[index] = features[index].available ? features[index].name : "Unavailable";
+                }
+            }
             break;
         case model::AppPage::Infrared:
             title = "INFRARED";
-            tools[0] = "Transmit";
-            tools[1] = "Receive";
-            tools[2] = "Record";
-            tools[3] = "Replay";
-            tools[4] = "Safety gate";
+            {
+                const auto features = platform::infrared_features();
+                for (int32_t index = 0; index < 5; ++index) {
+                    tools[index] = features[index].available ? features[index].name : "Unavailable";
+                }
+            }
             break;
         case model::AppPage::Expansion:
             title = "EXPANSION";
-            tools[0] = "Grove I2C";
-            tools[1] = "UART";
-            tools[2] = "SPI";
-            tools[3] = "GPIO";
-            tools[4] = "LoRa / radio hats";
+            {
+                const auto features = platform::expansion_features();
+                for (int32_t index = 0; index < 5; ++index) {
+                    tools[index] = features[index].available ? features[index].name : "Unavailable";
+                }
+            }
             break;
         case model::AppPage::Tools:
             title = "TOOLS";
-            tools[0] = "File browser";
-            tools[1] = "Calculator";
-            tools[2] = "Stopwatch";
-            tools[3] = "Morse";
-            tools[4] = "Screen test";
+            {
+                const auto features = platform::tools_features();
+                for (int32_t index = 0; index < 5; ++index) {
+                    tools[index] = features[index].available ? features[index].name : "Unavailable";
+                }
+            }
             break;
         case model::AppPage::Media:
             title = "MEDIA";
-            tools[0] = "Camera";
-            tools[1] = "Recorder";
-            tools[2] = "Music";
-            tools[3] = "Piano";
-            tools[4] = "IR audio routing";
+            {
+                const auto features = platform::media_features();
+                for (int32_t index = 0; index < 5; ++index) {
+                    tools[index] = features[index].available ? features[index].name : "Unavailable";
+                }
+            }
             break;
         default:
             break;
