@@ -128,6 +128,19 @@ bool persist_theme(ThemePersistence& persistence, int32_t theme_id) {
     return true;
 }
 
+bool persist_clock_format(ThemePersistence& persistence, bool clock_24h) {
+    persistence.config.clock_24h = clock_24h;
+    std::string error;
+    if (!save_application_config(persistence.config_path, persistence.config, error)) {
+        LOG_WARN("failed to save clock format {}: {}", persistence.config_path, error);
+        return false;
+    }
+    LOG_INFO("saved clock format: {} (clock_24h={})",
+             persistence.config_path,
+             clock_24h);
+    return true;
+}
+
 void persist_theme_observer(lv_observer_t* observer, lv_subject_t* subject) {
     auto* persistence = static_cast<ThemePersistence*>(lv_observer_get_user_data(observer));
     if (!persistence || persistence->previewing) {
@@ -679,7 +692,8 @@ private:
                 return;
             }
             case 6: {
-                const std::string clock = platform::current_clock_text();
+                const std::string clock =
+                    platform::current_clock_text(view_model_.clock_24h());
                 toast_->show(clock.empty() ? "System clock unavailable"
                                            : "System time\n" + clock,
                              clock.empty() ? view::widgets::ToastTone::Warning
@@ -693,6 +707,21 @@ private:
             default:
                 return;
         }
+    }
+
+    void toggle_clock_format() {
+        const bool clock_24h = !view_model_.clock_24h();
+        view_model_.set_clock_24h(clock_24h);
+        if (!persist_clock_format(theme_persistence_, clock_24h)) {
+            toast_->show("Clock format changed but could not be saved",
+                         view::widgets::ToastTone::Error,
+                         4200);
+            return;
+        }
+        toast_->show(std::string("Clock format saved\n") +
+                         (clock_24h ? "24-hour" : "12-hour"),
+                     view::widgets::ToastTone::Success,
+                     3200);
     }
 
     void show_network_interfaces() {
@@ -1202,7 +1231,8 @@ private:
                                 start_text_tool(TextToolMode::Calculator);
                                 break;
                             case 2: {
-                                const std::string clock = platform::current_clock_text();
+                                const std::string clock =
+                                    platform::current_clock_text(view_model_.clock_24h());
                                 toast_->show(clock.empty() ? "System clock unavailable"
                                                            : "System time\n" + clock,
                                              clock.empty()
@@ -1254,6 +1284,8 @@ private:
                     if (view_model_.current_page() == model::AppPage::Butter) {
                         if (view_model_.tool_selection() == 8) {
                             start_theme_picker();
+                        } else if (view_model_.tool_selection() == 9) {
+                            toggle_clock_format();
                         } else {
                             show_system_status(view_model_.tool_selection());
                         }
@@ -1532,6 +1564,7 @@ int Application::run() {
         } else {
             view_model.set_dark_mode(config.dark_mode);
         }
+        view_model.set_clock_24h(config.clock_24h);
         LOG_INFO("loaded config: {} (theme={})",
                  loaded_config_path,
                  view::theme_name(view_model.theme_id()));

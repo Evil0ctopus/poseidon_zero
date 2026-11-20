@@ -17,15 +17,15 @@
 </p>
 
 <div align="center">
-    <h1>CardputerZero Application Template</h1>
+    <h1>POSEIDON-Zero</h1>
 </div>
 
 <div align="center">
-  <p>A simple starter template for building embedded Linux GUI applications with LVGL and CMake.</p>
+  <p>A keyboard-friendly system and utility dashboard for the Linux-based CardputerZero.</p>
 </div>
 
 <p align="center" style="margin: 20px 0; display: flex; justify-content: center; flex-wrap: wrap; gap: 12px;">
-  <img src="https://img.shields.io/badge/SDL3-173B73?style=flat-square&logo=sdl&logoColor=white" alt="SDL3" />
+  <img src="https://img.shields.io/badge/SDL2-173B73?style=flat-square&logo=sdl&logoColor=white" alt="SDL2" />
   <img src="https://img.shields.io/badge/CMake-064F8C?style=flat-square&logo=cmake&logoColor=white" alt="CMake" />
   <img src="https://img.shields.io/badge/LVGL-2A9FD6?style=flat-square&logo=lvgl&logoColor=white" alt="LVGL" />
   <img src="https://img.shields.io/badge/Raspberry%20Pi-A22846?style=flat-square&logo=raspberrypi&logoColor=white" alt="Raspberry Pi" />
@@ -39,11 +39,13 @@
     />
   </a>
 </p>
-It is intended to be used as a clean development baseline: desktop builds use an SDL hardware-accelerated compositor for fast UI preview, while device builds use the Linux/LVGL platform drivers.
+POSEIDON-Zero brings a themed, swipeable interface and practical local utilities to the
+CardputerZero. Desktop builds use an SDL simulator for UI preview; device builds use Linux and
+LVGL platform drivers. Features without a supported implementation are marked `[OFF]`.
 
 ## Project Overview
 
-In this example project, we used small MVVM-style structure around LVGL:
+The app uses a small MVVM-style structure around LVGL:
 
 - **UI layer**: screens and widgets are implemented with LVGL objects. `BaseScreen` owns the page root, title bar, nav bar, and page content. Widgets derive from `BaseWidgets` and expose a `build()` entry point.
 - **Data model**: `BaseModel` stores application state such as current page and theme mode.
@@ -52,15 +54,15 @@ In this example project, we used small MVVM-style structure around LVGL:
 - **Data flow**: user input triggers widget callbacks, callbacks update `BaseViewModel`, view model publishes subjects, and bound UI objects refresh automatically through LVGL observers.
 - **Platform layer**: platform code owns Linux input integration and other hardware-facing services. The nav bar maps hardware/keyboard keys `4` to `8`, plus `ESC` for quit.
 
-Current demo UI:
+Current UI:
 
 - Home: category launcher for system status, network status, wireless status, infrared,
   expansion, tools, and media.
 - Category pages: keyboard-navigable, scrollable tool lists with status feedback for
   unavailable hardware features and visibly marked `[OFF]` parity placeholders.
-- System page: live device status, the saved theme picker, and display-brightness controls when
-  the Linux backlight interface is available. The desktop simulator reports brightness control
-  as unsupported.
+- System page: live device status, a saved theme picker, and a 12/24-hour clock setting. Display
+  brightness controls are available when the Linux backlight interface is supported; the desktop
+  simulator reports brightness control as unsupported.
 - Theme: the navigation-bar moon/sun action quickly switches between light and dark palettes;
   **System → Themes** or **Tools → Themes** previews and saves all 11 POSEIDON-ADV palettes plus
   Zero Light.
@@ -137,13 +139,17 @@ Theme startup behavior is configured in `config/poseidon-zero.conf`:
 ```ini
 [application]
 theme_id=11
+clock_24h=yes
 ```
 
 `theme_id` ranges from `0` to `11`: POSEIDON, MATRIX, E-INK, SYNTHWAVE, PHANTOM, BLOOD,
 AMBER CRT, NIGHT CITY, SOLARIS, NORDIC FROST, GHOST PURPLE, and ZERO LIGHT. Existing configs
 without `theme_id` continue to use `dark_mode` (`yes`/`no`, `true`/`false`, or `1`/`0`) as a
-compatibility fallback. The **Tools → Themes** picker previews palettes without saving until
-`ENTER`; `ESC` restores the previous palette.
+compatibility fallback. `clock_24h` accepts the same boolean values and defaults to `yes` for
+existing configurations. Toggle it from **System → Clock format**; the title bar and clock tools
+update on the next clock refresh, and the choice is saved with the user configuration. The
+**Tools → Themes** picker previews palettes without saving until `ENTER`; `ESC` restores the
+previous palette.
 Installed device builds use `/etc/poseidon-zero.conf` as the system default. Changing the theme
 from the navigation bar (keyboard shortcut `6`) or saving in the theme picker writes a per-user override to
 `$XDG_CONFIG_HOME/poseidon-zero/poseidon-zero.conf`, or `~/.config/poseidon-zero/poseidon-zero.conf`
@@ -471,6 +477,7 @@ Ethernet, and gateway; it runs locally and does not issue commands to a USB-conn
 **Flashlight** displays a full-white screen until a key is pressed. **Dice / 8-ball** switches
 between dice, coin, and 8-ball with `UP`/`DOWN` (or `M`), rolls with `ENTER`, and exits with `ESC`.
 **Screen test** cycles through solid display colors with any key and exits with `ESC`.
+**System → Clock format** toggles the title-bar and tool clocks between 12-hour and 24-hour time.
 **Themes** previews the full palette list with `UP`/`DOWN`; press `ENTER` to save or `ESC` to
 restore the prior theme. Ambient preview, alternate layout, screensaver, and sound settings remain
 visible as `[OFF]` entries because those Zero implementations are not available.

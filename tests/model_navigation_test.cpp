@@ -68,13 +68,13 @@ int main() {
     model.set_current_page(model::AppPage::Butter);
     model.set_tool_selection(model::kSystemToolItemCount - 1);
     if (model.tool_selection() != model::kSystemToolItemCount - 1) {
-        std::cerr << "System selection should reach the Themes item\n";
+        std::cerr << "System selection should reach the final settings item\n";
         return 1;
     }
 
     model.move_tool_selection(1);
     if (model.tool_selection() != model::kSystemToolItemCount - 1) {
-        std::cerr << "System selection should clamp at the Themes item\n";
+        std::cerr << "System selection should clamp at the final settings item\n";
         return 1;
     }
 

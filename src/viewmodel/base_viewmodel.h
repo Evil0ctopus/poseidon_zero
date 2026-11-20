@@ -38,6 +38,8 @@ public:
     void toggle_dark_mode();
     model::ThemeId theme_id() const;
     void set_theme_id(model::ThemeId id);
+    bool clock_24h() const;
+    void set_clock_24h(bool enabled);
 
     model::AppPage current_page() const;
     void show_apple_page();

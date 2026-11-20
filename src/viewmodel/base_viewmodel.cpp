@@ -100,6 +100,14 @@ void BaseViewModel::set_theme_id(model::ThemeId id) {
     theme_id_subject_.set(static_cast<int32_t>(model_.theme_id()));
 }
 
+bool BaseViewModel::clock_24h() const {
+    return model_.clock_24h();
+}
+
+void BaseViewModel::set_clock_24h(bool enabled) {
+    model_.set_clock_24h(enabled);
+}
+
 model::AppPage BaseViewModel::current_page() const {
     return model_.current_page();
 }

@@ -102,7 +102,8 @@ ButterScreen::~ButterScreen() {
 }
 
 void ButterScreen::refresh_tool_values() {
-    const std::string clock = "Clock  " + platform::current_clock_text();
+    const std::string clock =
+        "Clock  " + platform::current_clock_text(view_model().clock_24h());
     lv_label_set_text(clock_label_, clock.c_str());
     char uptime[64];
     std::snprintf(uptime,
@@ -229,7 +230,8 @@ void ButterScreen::build_content(lv_obj_t* content) {
                               "%s",
                               calculator_summary);
                 tools[1] = calculator_storage;
-                const std::string clock = platform::current_clock_text();
+                const std::string clock =
+                    platform::current_clock_text(view_model().clock_24h());
                 std::snprintf(clock_summary,
                               sizeof(clock_summary),
                               "Clock  %s",
@@ -302,6 +304,7 @@ void ButterScreen::build_content(lv_obj_t* content) {
         tools[6] = "System clock";
         tools[7] = "Display brightness";
         tools[8] = "Themes";
+        tools[9] = "Clock format";
     } else if (view_model().current_page() == model::AppPage::Network) {
         const auto interfaces = platform::list_network_interfaces();
         tools[0] = interfaces.empty() ? "No network interfaces" : "Interfaces  available";

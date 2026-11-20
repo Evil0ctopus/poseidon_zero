@@ -39,6 +39,14 @@ void BaseModel::set_theme_id(ThemeId id) {
     theme_id_ = value >= 0 && value < kThemeCount ? id : ThemeId::ZeroLight;
 }
 
+bool BaseModel::clock_24h() const {
+    return clock_24h_;
+}
+
+void BaseModel::set_clock_24h(bool enabled) {
+    clock_24h_ = enabled;
+}
+
 AppPage BaseModel::current_page() const {
     return current_page_;
 }

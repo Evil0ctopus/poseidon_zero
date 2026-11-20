@@ -202,7 +202,17 @@ std::string decode_morse(const std::string& morse) {
     return result;
 }
 
-std::string current_clock_text() {
+std::string format_clock_text(const std::tm& local_time,
+                              bool clock_24h,
+                              bool include_seconds) {
+    const char* format = clock_24h
+                             ? (include_seconds ? "%H:%M:%S" : "%H:%M")
+                             : (include_seconds ? "%I:%M:%S %p" : "%I:%M %p");
+    char text[32]{};
+    return std::strftime(text, sizeof(text), format, &local_time) == 0 ? "" : text;
+}
+
+std::string current_clock_text(bool clock_24h, bool include_seconds) {
     const std::time_t now = std::time(nullptr);
     std::tm local{};
 #if defined(_WIN32)
@@ -210,9 +220,7 @@ std::string current_clock_text() {
 #else
     localtime_r(&now, &local);
 #endif
-    char text[32];
-    std::strftime(text, sizeof(text), "%H:%M:%S", &local);
-    return text;
+    return format_clock_text(local, clock_24h, include_seconds);
 }
 
 std::string local_identity_text() {

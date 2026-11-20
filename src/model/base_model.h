@@ -11,7 +11,7 @@
 namespace model {
 
 inline constexpr int32_t kStandardToolItemCount = 8;
-inline constexpr int32_t kSystemToolItemCount = 9;
+inline constexpr int32_t kSystemToolItemCount = 10;
 inline constexpr int32_t kToolsPageItemCount = 17;
 
 enum class ThemeId : int32_t {
@@ -52,6 +52,8 @@ public:
     void toggle_dark_mode();
     ThemeId theme_id() const;
     void set_theme_id(ThemeId id);
+    bool clock_24h() const;
+    void set_clock_24h(bool enabled);
 
     AppPage current_page() const;
     void set_current_page(AppPage page);
@@ -66,6 +68,7 @@ public:
 
 private:
     ThemeId theme_id_ = ThemeId::ZeroLight;
+    bool clock_24h_{true};
     AppPage current_page_ = AppPage::Apple;
     int32_t menu_selection_ = 0;
     int32_t tool_selection_ = 0;

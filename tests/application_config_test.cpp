@@ -36,6 +36,7 @@ int main() {
     config.dark_mode = false;
     config.theme_id = 11;
     config.theme_id_set = true;
+    config.clock_24h = false;
     config.large_text = true;
     config.reduced_motion = true;
 
@@ -48,7 +49,8 @@ int main() {
     app::ApplicationConfig loaded;
     if (!app::load_application_config(temporary.path.string(), loaded, error) ||
         !loaded.theme_id_set || loaded.theme_id != config.theme_id ||
-        loaded.dark_mode != config.dark_mode || loaded.large_text != config.large_text ||
+        loaded.dark_mode != config.dark_mode || loaded.clock_24h != config.clock_24h ||
+        loaded.large_text != config.large_text ||
         loaded.reduced_motion != config.reduced_motion) {
         std::cerr << "Saved application settings did not round-trip\n";
         return 1;
@@ -64,6 +66,10 @@ int main() {
         std::cerr << "Legacy dark_mode configs should remain supported\n";
         return 1;
     }
+    if (!legacy.clock_24h) {
+        std::cerr << "Configs without clock_24h should default to 24-hour time\n";
+        return 1;
+    }
 
     {
         std::ofstream output(temporary.path, std::ios::trunc);
@@ -71,6 +77,15 @@ int main() {
     }
     if (app::load_application_config(temporary.path.string(), loaded, error)) {
         std::cerr << "Out-of-range theme IDs should be rejected\n";
+        return 1;
+    }
+
+    {
+        std::ofstream output(temporary.path, std::ios::trunc);
+        output << "[application]\nclock_24h=maybe\n";
+    }
+    if (app::load_application_config(temporary.path.string(), loaded, error)) {
+        std::cerr << "Invalid clock format settings should be rejected\n";
         return 1;
     }
 

@@ -14,6 +14,7 @@
 #include "asset_manager.h"
 #include "bindings.h"
 #include "device_status.h"
+#include "safe_tools.h"
 #include "theme.h"
 #include "ui_const.h"
 
@@ -100,7 +101,7 @@ void TitleBar::build() {
     auto* title = lv_label_create(core_obj_);
     lv_label_bind_text(title, view_model_.title_subject(), nullptr);
     lv_label_set_long_mode(title, LV_LABEL_LONG_DOT);
-    lv_obj_set_width(title, 130);
+    lv_obj_set_width(title, 120);
     const lv_font_t* title_font = assets_.load_standard_font(14);
     lv_obj_set_style_text_font(title, title_font ? title_font : &lv_font_montserrat_14, 0);
     lv_obj_align(title, LV_ALIGN_LEFT_MID, 8, 0);
@@ -108,7 +109,7 @@ void TitleBar::build() {
 
     auto* status = lv_obj_create(core_obj_);
     lv_obj_remove_style_all(status);
-    lv_obj_set_size(status, 160, LV_PCT(100));
+    lv_obj_set_size(status, 170, LV_PCT(100));
     lv_obj_align(status, LV_ALIGN_RIGHT_MID, -5, 0);
     lv_obj_set_flex_flow(status, LV_FLEX_FLOW_ROW);
     lv_obj_set_flex_align(status, LV_FLEX_ALIGN_END, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
@@ -141,16 +142,10 @@ void TitleBar::build() {
 }
 
 void TitleBar::refresh_time() {
-    const std::time_t now = std::time(nullptr);
-    std::tm local_time{};
-#if defined(_WIN32)
-    localtime_s(&local_time, &now);
-#else
-    localtime_r(&now, &local_time);
-#endif
-    std::array<char, 6> text{};
-    std::strftime(text.data(), text.size(), "%H:%M", &local_time);
-    lv_label_set_text(time_label_, text.data());
+    const bool clock_24h = view_model_.clock_24h();
+    const std::string text = platform::current_clock_text(clock_24h, false);
+    lv_obj_set_width(time_label_, clock_24h ? 42 : 60);
+    lv_label_set_text(time_label_, text.c_str());
 }
 
 void TitleBar::refresh_device_status() {
