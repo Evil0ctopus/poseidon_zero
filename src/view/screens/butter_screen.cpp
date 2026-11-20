@@ -73,11 +73,33 @@ ButterScreen::ButterScreen(viewmodel::BaseViewModel& view_model, app::AssetManag
     init();
 }
 
+ButterScreen::~ButterScreen() {
+    if (refresh_timer_) {
+        lv_timer_delete(refresh_timer_);
+    }
+}
+
+void ButterScreen::refresh_tool_values() {
+    const std::string clock = "Clock  " + platform::current_clock_text();
+    lv_label_set_text(clock_label_, clock.c_str());
+    char uptime[64];
+    std::snprintf(uptime,
+                  sizeof(uptime),
+                  "Uptime  %lld sec",
+                  static_cast<long long>(platform::uptime_seconds()));
+    lv_label_set_text(uptime_label_, uptime);
+}
+
+void ButterScreen::refresh_tool_values_cb(lv_timer_t* timer) {
+    auto* screen = static_cast<ButterScreen*>(lv_timer_get_user_data(timer));
+    screen->refresh_tool_values();
+}
+
 void ButterScreen::build_content(lv_obj_t* content) {
     lv_obj_set_flex_flow(content, LV_FLEX_FLOW_COLUMN);
     lv_obj_set_flex_align(content, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
-    lv_obj_set_style_pad_top(content, 5, 0);
-    lv_obj_set_style_pad_row(content, 3, 0);
+    lv_obj_set_style_pad_top(content, 2, 0);
+    lv_obj_set_style_pad_row(content, 2, 0);
 
     auto* heading = lv_label_create(content);
     const char* title = "SYSTEM TOOLS";
@@ -267,7 +289,7 @@ void ButterScreen::build_content(lv_obj_t* content) {
     for (int32_t grid_row = 0; grid_row < kRowCount; ++grid_row) {
         auto* row_group = lv_obj_create(content);
         lv_obj_remove_style_all(row_group);
-        lv_obj_set_size(row_group, 270, 18);
+        lv_obj_set_size(row_group, 270, 16);
         lv_obj_set_flex_flow(row_group, LV_FLEX_FLOW_ROW);
         lv_obj_set_flex_align(row_group,
                               LV_FLEX_ALIGN_START,
@@ -281,7 +303,7 @@ void ButterScreen::build_content(lv_obj_t* content) {
             auto* row = lv_button_create(row_group);
             row_objects[index] = row;
             lv_obj_remove_style_all(row);
-            lv_obj_set_size(row, 133, 18);
+            lv_obj_set_size(row, 133, 16);
             lv_obj_set_style_radius(row, 3, 0);
             lv_obj_set_style_border_width(row, 1, 0);
             lv_obj_set_style_pad_left(row, 4, 0);
@@ -302,6 +324,13 @@ void ButterScreen::build_content(lv_obj_t* content) {
             reactive::bind_theme(label,
                                  view_model().dark_mode_subject(),
                                  reactive::ThemeRole::Text);
+            if (view_model().current_page() == model::AppPage::Tools) {
+                if (index == 2) {
+                    clock_label_ = label;
+                } else if (index == 4) {
+                    uptime_label_ = label;
+                }
+            }
             lv_obj_set_style_border_color(
                 row,
                 index == view_model().tool_selection()
@@ -322,6 +351,12 @@ void ButterScreen::build_content(lv_obj_t* content) {
                                 tool_selection_observer,
                                 content,
                                 binding);
+    if (clock_label_ && uptime_label_) {
+        refresh_timer_ = lv_timer_create(refresh_tool_values_cb, 1000, this);
+        if (!refresh_timer_) {
+            std::fprintf(stderr, "Unable to start tool value refresh timer\n");
+        }
+    }
 }
 
 } // namespace screen

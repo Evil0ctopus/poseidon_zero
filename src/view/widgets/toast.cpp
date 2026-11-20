@@ -39,7 +39,7 @@ void Toast::build() {
     lv_obj_align(core_obj_, LV_ALIGN_BOTTOM_MID, 0, -config_.bottom_offset);
     lv_obj_set_style_radius(core_obj_, 10, 0);
     lv_obj_set_style_border_width(core_obj_, 0, 0);
-    lv_obj_set_style_bg_opa(core_obj_, LV_OPA_90, 0);
+    lv_obj_set_style_bg_opa(core_obj_, LV_OPA_COVER, 0);
     lv_obj_set_style_shadow_width(core_obj_, 8, 0);
     lv_obj_set_style_shadow_opa(core_obj_, LV_OPA_10, 0);
     lv_obj_clear_flag(core_obj_, LV_OBJ_FLAG_SCROLLABLE);

@@ -496,8 +496,7 @@ private:
                                  report_path.string(),
                                  "",
                                  view::widgets::ToastTone::Success,
-                                 6000,
-                                 true);
+                                 6000);
     }
 
     void show_system_status(int32_t selection) {
@@ -1008,8 +1007,7 @@ private:
                                              result.path,
                                              "",
                                              view::widgets::ToastTone::Success,
-                                             5200,
-                                             true);
+                                             5200);
                 }
                 else {
                     LOG_WARN("screenshot failed: {}", result.error);
