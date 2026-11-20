@@ -46,30 +46,41 @@ void theme_observer(lv_observer_t* observer, lv_subject_t* subject) {
     }
 
     const auto role = static_cast<ThemeRole>(reinterpret_cast<uintptr_t>(lv_observer_get_user_data(observer)));
-    const auto colors = view::palette(lv_subject_get_int(subject) != 0);
+    const auto colors = view::palette(
+        static_cast<model::ThemeId>(lv_subject_get_int(subject)));
 
     switch (role) {
         case ThemeRole::Screen:
             set_common_box_style(obj);
+            lv_obj_set_style_radius(obj, 0, 0);
             lv_obj_set_style_bg_opa(obj, LV_OPA_COVER, 0);
             lv_obj_set_style_bg_color(obj, colors.background, 0);
             lv_obj_set_style_text_color(obj, colors.text, 0);
             break;
         case ThemeRole::Surface:
             set_common_box_style(obj);
+            lv_obj_set_style_radius(obj, 10, 0);
             lv_obj_set_style_bg_opa(obj, LV_OPA_COVER, 0);
             lv_obj_set_style_bg_color(obj, colors.surface, 0);
+            lv_obj_set_style_border_width(obj, 1, 0);
+            lv_obj_set_style_border_color(obj, colors.border, 0);
+            lv_obj_set_style_shadow_width(obj, 3, 0);
+            lv_obj_set_style_shadow_color(obj, colors.background, 0);
             lv_obj_set_style_text_color(obj, colors.text, 0);
             break;
         case ThemeRole::Bar:
             set_common_box_style(obj);
+            lv_obj_set_style_radius(obj, 8, 0);
             lv_obj_set_style_bg_opa(obj, LV_OPA_COVER, 0);
             lv_obj_set_style_bg_color(obj, colors.bar, 0);
             lv_obj_set_style_border_width(obj, 1, 0);
             lv_obj_set_style_border_color(obj, colors.border, 0);
+            lv_obj_set_style_shadow_width(obj, 2, 0);
+            lv_obj_set_style_shadow_color(obj, colors.background, 0);
             lv_obj_set_style_text_color(obj, colors.text, 0);
             break;
         case ThemeRole::Button:
+            set_common_box_style(obj);
             lv_obj_set_style_radius(obj, 4, 0);
             lv_obj_set_style_border_width(obj, 1, 0);
             lv_obj_set_style_border_color(obj, colors.border, 0);
@@ -82,24 +93,34 @@ void theme_observer(lv_observer_t* observer, lv_subject_t* subject) {
         case ThemeRole::Text:
             lv_obj_set_style_text_color(obj, colors.text, 0);
             break;
+        case ThemeRole::GlowPrimary:
+        case ThemeRole::GlowInfo:
+            set_common_box_style(obj);
+            lv_obj_set_style_radius(obj, LV_RADIUS_CIRCLE, 0);
+            lv_obj_set_style_bg_opa(obj, LV_OPA_10, 0);
+            lv_obj_set_style_bg_color(obj,
+                                      role == ThemeRole::GlowPrimary ? colors.primary
+                                                                    : colors.info,
+                                      0);
+            break;
     }
 }
 
 } // namespace
 
-void bind_theme(lv_obj_t* obj, lv_subject_t* dark_mode_subject, ThemeRole role) {
-    if (!obj || !dark_mode_subject) {
+void bind_theme(lv_obj_t* obj, lv_subject_t* theme_id_subject, ThemeRole role) {
+    if (!obj || !theme_id_subject) {
         return;
     }
 
-    lv_subject_add_observer_obj(dark_mode_subject,
+    lv_subject_add_observer_obj(theme_id_subject,
                                 theme_observer,
                                 obj,
                                 reinterpret_cast<void*>(static_cast<uintptr_t>(role)));
 }
 
-void bind_theme(lv_obj_t* obj, Subject& dark_mode_subject, ThemeRole role) {
-    bind_theme(obj, dark_mode_subject.native(), role);
+void bind_theme(lv_obj_t* obj, Subject& theme_id_subject, ThemeRole role) {
+    bind_theme(obj, theme_id_subject.native(), role);
 }
 
 void bind_bool_text(lv_obj_t* label,

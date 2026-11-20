@@ -6,10 +6,14 @@
 
 #include "application_config.h"
 
+#include "base_model.h"
+
 #include <algorithm>
+#include <charconv>
 #include <cctype>
 #include <filesystem>
 #include <fstream>
+#include <system_error>
 #include <vector>
 
 namespace app {
@@ -96,6 +100,19 @@ bool load_application_config(const std::string& path,
                 return false;
             }
         }
+        if (section == "application" && key == "theme_id") {
+            const std::string value = trim(line.substr(separator + 1));
+            int32_t theme_id = 0;
+            const auto parsed =
+                std::from_chars(value.data(), value.data() + value.size(), theme_id);
+            if (parsed.ec != std::errc{} || parsed.ptr != value.data() + value.size() ||
+                theme_id < 0 || theme_id >= model::kThemeCount) {
+                error = "invalid theme_id value at line " + std::to_string(line_number);
+                return false;
+            }
+            config.theme_id = theme_id;
+            config.theme_id_set = true;
+        }
         if (section == "application" && key == "large_text") {
             if (!parse_bool(line.substr(separator + 1), config.large_text)) {
                 error = "invalid large_text value at line " + std::to_string(line_number);
@@ -117,6 +134,10 @@ bool save_application_config(const std::string& path,
                              const ApplicationConfig& config,
                              std::string& error) {
     error.clear();
+    if (config.theme_id < 0 || config.theme_id >= model::kThemeCount) {
+        error = "theme_id is outside the supported range";
+        return false;
+    }
 
     const std::filesystem::path config_path(path);
     const auto parent = config_path.parent_path();
@@ -140,9 +161,11 @@ bool save_application_config(const std::string& path,
     bool in_application_section = false;
     bool found_application_section = false;
     bool wrote_dark_mode = false;
+    bool wrote_theme_id = false;
     bool wrote_large_text = false;
     bool wrote_reduced_motion = false;
     const std::string dark_mode_line = config.dark_mode ? "dark_mode=yes" : "dark_mode=no";
+    const std::string theme_id_line = "theme_id=" + std::to_string(config.theme_id);
     const std::string large_text_line = config.large_text ? "large_text=yes" : "large_text=no";
     const std::string reduced_motion_line =
         config.reduced_motion ? "reduced_motion=yes" : "reduced_motion=no";
@@ -155,6 +178,10 @@ bool save_application_config(const std::string& path,
             if (in_application_section && !wrote_dark_mode) {
                 updated.push_back(dark_mode_line);
                 wrote_dark_mode = true;
+            }
+            if (in_application_section && !wrote_theme_id) {
+                updated.push_back(theme_id_line);
+                wrote_theme_id = true;
             }
             if (in_application_section && !wrote_large_text) {
                 updated.push_back(large_text_line);
@@ -172,6 +199,13 @@ bool save_application_config(const std::string& path,
             if (!wrote_dark_mode) {
                 updated.push_back(dark_mode_line);
                 wrote_dark_mode = true;
+            }
+            continue;
+        }
+        if (in_application_section && is_key(current_line, "theme_id")) {
+            if (!wrote_theme_id) {
+                updated.push_back(theme_id_line);
+                wrote_theme_id = true;
             }
             continue;
         }
@@ -200,6 +234,9 @@ bool save_application_config(const std::string& path,
             updated.emplace_back("[application]");
         }
         updated.push_back(dark_mode_line);
+    }
+    if (!wrote_theme_id) {
+        updated.push_back(theme_id_line);
     }
     if (!wrote_large_text) {
         updated.push_back(large_text_line);

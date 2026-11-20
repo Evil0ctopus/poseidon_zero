@@ -24,6 +24,7 @@ public:
     lv_subject_t* title_subject();
     lv_subject_t* greeting_subject();
     lv_subject_t* dark_mode_subject();
+    lv_subject_t* theme_id_subject();
     lv_subject_t* current_page_subject();
     lv_subject_t* counter_subject();
     lv_subject_t* bold_text_subject();
@@ -35,6 +36,8 @@ public:
     bool is_dark_mode() const;
     void set_dark_mode(bool enabled);
     void toggle_dark_mode();
+    model::ThemeId theme_id() const;
+    void set_theme_id(model::ThemeId id);
 
     model::AppPage current_page() const;
     void show_apple_page();
@@ -65,6 +68,7 @@ private:
     reactive::StringSubject<32> title_subject_;
     reactive::StringSubject<32> greeting_subject_;
     reactive::BoolSubject dark_mode_subject_;
+    reactive::IntSubject theme_id_subject_;
     reactive::IntSubject current_page_subject_;
     reactive::IntSubject counter_subject_;
     reactive::BoolSubject bold_text_subject_;

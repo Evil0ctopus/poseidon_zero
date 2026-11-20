@@ -19,12 +19,13 @@ struct FeatureDefinition {
 };
 
 using FeatureList = std::array<FeatureDefinition, 8>;
+using ToolFeatureList = std::array<FeatureDefinition, 17>;
 
 FeatureList network_features();
 FeatureList wireless_features();
 FeatureList infrared_features();
 FeatureList expansion_features();
-FeatureList tools_features();
+ToolFeatureList tools_features();
 FeatureList media_features();
 
 } // namespace platform

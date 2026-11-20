@@ -56,7 +56,7 @@ void Toast::build() {
     lv_obj_set_style_text_font(label_, font_, 0);
     lv_obj_center(label_);
 
-    lv_subject_add_observer_obj(view_model_.dark_mode_subject(),
+    lv_subject_add_observer_obj(view_model_.theme_id_subject(),
                                 theme_observer_cb,
                                 core_obj_,
                                 this);
@@ -188,7 +188,7 @@ void Toast::update_label_text() {
         return;
     }
 
-    const auto colors = view::palette(view_model_.is_dark_mode());
+    const auto colors = view::palette(view_model_.theme_id());
     lv_color_t highlight_color = colors.primary;
     if (tone_ == ToastTone::Success) {
         highlight_color = colors.success;
@@ -253,7 +253,7 @@ void Toast::apply_theme() {
         return;
     }
 
-    const auto colors = view::palette(view_model_.is_dark_mode());
+    const auto colors = view::palette(view_model_.theme_id());
     lv_obj_set_style_bg_color(core_obj_, colors.button, 0);
     lv_obj_set_style_shadow_color(core_obj_, lv_color_black(), 0);
     lv_obj_set_style_text_color(label_, colors.text, 0);

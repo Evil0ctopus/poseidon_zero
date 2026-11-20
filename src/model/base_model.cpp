@@ -19,15 +19,24 @@ const char* BaseModel::greeting() const {
 }
 
 bool BaseModel::dark_mode() const {
-    return dark_mode_;
+    return theme_id_ != ThemeId::EInk && theme_id_ != ThemeId::ZeroLight;
 }
 
 void BaseModel::set_dark_mode(bool enabled) {
-    dark_mode_ = enabled;
+    theme_id_ = enabled ? ThemeId::Poseidon : ThemeId::ZeroLight;
 }
 
 void BaseModel::toggle_dark_mode() {
-    dark_mode_ = !dark_mode_;
+    set_dark_mode(!dark_mode());
+}
+
+ThemeId BaseModel::theme_id() const {
+    return theme_id_;
+}
+
+void BaseModel::set_theme_id(ThemeId id) {
+    const int32_t value = static_cast<int32_t>(id);
+    theme_id_ = value >= 0 && value < kThemeCount ? id : ThemeId::ZeroLight;
 }
 
 AppPage BaseModel::current_page() const {
@@ -37,6 +46,7 @@ AppPage BaseModel::current_page() const {
 
 void BaseModel::set_current_page(AppPage page) {
     current_page_ = page;
+    set_tool_selection(tool_selection_);
 }
 
 void BaseModel::toggle_page() {
@@ -61,7 +71,11 @@ int32_t BaseModel::tool_selection() const {
 }
 
 void BaseModel::set_tool_selection(int32_t index) {
-    tool_selection_ = std::clamp(index, int32_t{0}, int32_t{7});
+    const int32_t max_selection =
+        current_page_ == AppPage::Tools ? kToolsPageItemCount - 1
+        : current_page_ == AppPage::Butter ? kSystemToolItemCount - 1
+                                           : kStandardToolItemCount - 1;
+    tool_selection_ = std::clamp(index, int32_t{0}, max_selection);
 }
 
 void BaseModel::move_tool_selection(int32_t delta) {

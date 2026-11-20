@@ -27,10 +27,12 @@ enum class ThemeRole {
     Bar,
     Button,
     Text,
+    GlowPrimary,
+    GlowInfo,
 };
 
-void bind_theme(lv_obj_t* obj, lv_subject_t* dark_mode_subject, ThemeRole role);
-void bind_theme(lv_obj_t* obj, Subject& dark_mode_subject, ThemeRole role);
+void bind_theme(lv_obj_t* obj, lv_subject_t* theme_id_subject, ThemeRole role);
+void bind_theme(lv_obj_t* obj, Subject& theme_id_subject, ThemeRole role);
 
 void bind_bool_text(lv_obj_t* label,
                     lv_subject_t* bool_subject,

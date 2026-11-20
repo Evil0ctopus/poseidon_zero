@@ -55,13 +55,13 @@ const char* battery_icon(int32_t capacity_percent, bool charging) {
 }
 
 void configure_label(lv_obj_t* label,
-                     lv_subject_t* dark_mode_subject,
+                     lv_subject_t* theme_id_subject,
                      const lv_font_t* font,
                      int32_t width) {
     lv_obj_set_width(label, width);
     lv_obj_set_style_text_font(label, font, 0);
     lv_obj_set_style_text_align(label, LV_TEXT_ALIGN_CENTER, 0);
-    reactive::bind_theme(label, dark_mode_subject, reactive::ThemeRole::Text);
+    reactive::bind_theme(label, theme_id_subject, reactive::ThemeRole::Text);
 }
 
 void set_visible(lv_obj_t* obj, bool visible) {
@@ -92,19 +92,19 @@ void TitleBar::build() {
 
     core_obj_ = lv_obj_create(parent_);
     lv_obj_remove_style_all(core_obj_);
-    lv_obj_set_size(core_obj_, LV_PCT(100), kTitleBarHeight);
-    lv_obj_align(core_obj_, LV_ALIGN_TOP_MID, 0, 0);
+    lv_obj_set_size(core_obj_, view::kScreenWidth - 8, kTitleBarHeight - 4);
+    lv_obj_align(core_obj_, LV_ALIGN_TOP_MID, 0, 2);
     lv_obj_clear_flag(core_obj_, LV_OBJ_FLAG_SCROLLABLE);
-    reactive::bind_theme(core_obj_, view_model_.dark_mode_subject(), reactive::ThemeRole::Bar);
+    reactive::bind_theme(core_obj_, view_model_.theme_id_subject(), reactive::ThemeRole::Bar);
 
     auto* title = lv_label_create(core_obj_);
     lv_label_bind_text(title, view_model_.title_subject(), nullptr);
     lv_label_set_long_mode(title, LV_LABEL_LONG_DOT);
-    lv_obj_set_width(title, 142);
+    lv_obj_set_width(title, 130);
     const lv_font_t* title_font = assets_.load_standard_font(14);
     lv_obj_set_style_text_font(title, title_font ? title_font : &lv_font_montserrat_14, 0);
     lv_obj_align(title, LV_ALIGN_LEFT_MID, 8, 0);
-    reactive::bind_theme(title, view_model_.dark_mode_subject(), reactive::ThemeRole::Text);
+    reactive::bind_theme(title, view_model_.theme_id_subject(), reactive::ThemeRole::Text);
 
     auto* status = lv_obj_create(core_obj_);
     lv_obj_remove_style_all(status);
@@ -125,15 +125,15 @@ void TitleBar::build() {
         status_font = &lv_font_montserrat_14;
     }
     wifi_label_ = lv_label_create(status);
-    configure_label(wifi_label_, view_model_.dark_mode_subject(), icon_font, 18);
+    configure_label(wifi_label_, view_model_.theme_id_subject(), icon_font, 18);
     ethernet_label_ = lv_label_create(status);
-    configure_label(ethernet_label_, view_model_.dark_mode_subject(), icon_font, 18);
+    configure_label(ethernet_label_, view_model_.theme_id_subject(), icon_font, 18);
     battery_icon_label_ = lv_label_create(status);
-    configure_label(battery_icon_label_, view_model_.dark_mode_subject(), icon_font, 18);
+    configure_label(battery_icon_label_, view_model_.theme_id_subject(), icon_font, 18);
     battery_percent_label_ = lv_label_create(status);
-    configure_label(battery_percent_label_, view_model_.dark_mode_subject(), status_font, 40);
+    configure_label(battery_percent_label_, view_model_.theme_id_subject(), status_font, 40);
     time_label_ = lv_label_create(status);
-    configure_label(time_label_, view_model_.dark_mode_subject(), status_font, 42);
+    configure_label(time_label_, view_model_.theme_id_subject(), status_font, 42);
 
     refresh_time();
     refresh_device_status();

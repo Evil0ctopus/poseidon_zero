@@ -9,6 +9,11 @@
 #include <fstream>
 #include <string>
 
+#if !defined(_WIN32)
+#include <pwd.h>
+#include <unistd.h>
+#endif
+
 namespace platform {
 namespace {
 
@@ -208,6 +213,28 @@ std::string current_clock_text() {
     char text[32];
     std::strftime(text, sizeof(text), "%H:%M:%S", &local);
     return text;
+}
+
+std::string local_identity_text() {
+#if defined(_WIN32)
+    const char* user_name = std::getenv("USERNAME");
+    const char* host_name = std::getenv("COMPUTERNAME");
+    const std::string user = user_name && user_name[0] != '\0' ? user_name : "unavailable";
+    const std::string host = host_name && host_name[0] != '\0' ? host_name : "unavailable";
+#else
+    const uid_t user_id = geteuid();
+    const passwd* account = getpwuid(user_id);
+    const std::string user =
+        account && account->pw_name ? std::string(account->pw_name)
+                                    : "uid " + std::to_string(user_id);
+
+    char host_name[256]{};
+    const std::string host =
+        gethostname(host_name, sizeof(host_name)) == 0 && host_name[0] != '\0'
+            ? host_name
+            : "unavailable";
+#endif
+    return "User " + user + "\nHost " + host;
 }
 
 std::int64_t uptime_seconds() {

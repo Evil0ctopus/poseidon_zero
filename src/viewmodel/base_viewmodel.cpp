@@ -19,6 +19,7 @@ BaseViewModel::BaseViewModel()
     : title_subject_(model_.app_title()),
       greeting_subject_(model_.greeting()),
       dark_mode_subject_(model_.dark_mode()),
+      theme_id_subject_(static_cast<int32_t>(model_.theme_id())),
       current_page_subject_(page_to_int(model_.current_page())),
       counter_subject_(0),
       bold_text_subject_(false),
@@ -39,6 +40,10 @@ lv_subject_t* BaseViewModel::greeting_subject() {
 
 lv_subject_t* BaseViewModel::dark_mode_subject() {
     return dark_mode_subject_.native();
+}
+
+lv_subject_t* BaseViewModel::theme_id_subject() {
+    return theme_id_subject_.native();
 }
 
 lv_subject_t* BaseViewModel::current_page_subject() {
@@ -75,12 +80,24 @@ bool BaseViewModel::is_dark_mode() const {
 
 void BaseViewModel::set_dark_mode(bool enabled) {
     model_.set_dark_mode(enabled);
-    publish_all();
+    dark_mode_subject_.set(model_.dark_mode());
+    theme_id_subject_.set(static_cast<int32_t>(model_.theme_id()));
 }
 
 void BaseViewModel::toggle_dark_mode() {
     model_.toggle_dark_mode();
-    publish_all();
+    dark_mode_subject_.set(model_.dark_mode());
+    theme_id_subject_.set(static_cast<int32_t>(model_.theme_id()));
+}
+
+model::ThemeId BaseViewModel::theme_id() const {
+    return model_.theme_id();
+}
+
+void BaseViewModel::set_theme_id(model::ThemeId id) {
+    model_.set_theme_id(id);
+    dark_mode_subject_.set(model_.dark_mode());
+    theme_id_subject_.set(static_cast<int32_t>(model_.theme_id()));
 }
 
 model::AppPage BaseViewModel::current_page() const {
@@ -185,6 +202,8 @@ void BaseViewModel::publish_all() {
     title_subject_.set(model_.app_title());
     greeting_subject_.set(model_.greeting());
     dark_mode_subject_.set(model_.dark_mode());
+    theme_id_subject_.set(static_cast<int32_t>(model_.theme_id()));
+    tool_selection_subject_.set(model_.tool_selection());
     current_page_subject_.set(page_to_int(model_.current_page()));
 }
 

@@ -7,6 +7,7 @@
 #pragma once
 
 #include "lvgl.h"
+#include "../model/base_model.h"
 
 namespace view {
 
@@ -30,7 +31,12 @@ struct ThemePalette {
     lv_color_t error;
 };
 
+ThemePalette palette(model::ThemeId id);
 ThemePalette palette(bool dark_mode);
-void apply_lvgl_theme(lv_display_t* display, bool dark_mode, const lv_font_t* font = LV_FONT_DEFAULT);
+const char* theme_name(model::ThemeId id);
+bool theme_is_dark(model::ThemeId id);
+void apply_lvgl_theme(lv_display_t* display,
+                      model::ThemeId id,
+                      const lv_font_t* font = LV_FONT_DEFAULT);
 
 } // namespace view

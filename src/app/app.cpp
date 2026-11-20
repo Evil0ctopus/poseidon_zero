@@ -8,6 +8,7 @@
 
 #include "application_config.h"
 #include "asset_manager.h"
+#include "backlight.h"
 #include "capabilities.h"
 #include "device_status.h"
 #include "help_popup.h"
@@ -36,6 +37,7 @@
 #include <exception>
 #include <memory>
 #include <mutex>
+#include <random>
 #include <string>
 #include <system_error>
 #include <thread>
@@ -78,9 +80,11 @@ void quit_requested_observer(lv_observer_t* observer, lv_subject_t* subject) {
     }
 }
 
-struct DarkModePersistence {
+struct ThemePersistence {
     std::string config_path;
-    bool last_dark_mode;
+    ApplicationConfig config;
+    int32_t last_theme_id;
+    bool previewing{false};
 };
 
 std::string writable_config_path() {
@@ -103,33 +107,42 @@ std::string writable_config_path() {
 #endif
 }
 
-void persist_dark_mode_observer(lv_observer_t* observer, lv_subject_t* subject) {
-    auto* persistence = static_cast<DarkModePersistence*>(lv_observer_get_user_data(observer));
-    if (!persistence) {
-        return;
+bool persist_theme(ThemePersistence& persistence, int32_t theme_id) {
+    if (theme_id < 0 || theme_id >= model::kThemeCount) {
+        return false;
     }
-    const bool dark_mode = lv_subject_get_int(subject) != 0;
-    if (dark_mode == persistence->last_dark_mode) {
-        return;
+    if (theme_id == persistence.last_theme_id) {
+        return true;
     }
-    persistence->last_dark_mode = dark_mode;
-
-    ApplicationConfig config;
-    config.dark_mode = dark_mode;
+    persistence.config.theme_id = theme_id;
+    persistence.config.theme_id_set = true;
+    persistence.config.dark_mode =
+        view::theme_is_dark(static_cast<model::ThemeId>(theme_id));
     std::string error;
-    if (save_application_config(persistence->config_path, config, error)) {
-        LOG_INFO("saved config: {} (dark_mode={})",
-                 persistence->config_path,
-                 config.dark_mode ? "yes" : "no");
-    } else {
-        LOG_WARN("failed to save config {}: {}", persistence->config_path, error);
+    if (!save_application_config(persistence.config_path, persistence.config, error)) {
+        LOG_WARN("failed to save config {}: {}", persistence.config_path, error);
+        return false;
     }
+    persistence.last_theme_id = theme_id;
+    LOG_INFO("saved config: {} (theme_id={})", persistence.config_path, theme_id);
+    return true;
+}
+
+void persist_theme_observer(lv_observer_t* observer, lv_subject_t* subject) {
+    auto* persistence = static_cast<ThemePersistence*>(lv_observer_get_user_data(observer));
+    if (!persistence || persistence->previewing) {
+        return;
+    }
+    persist_theme(*persistence, lv_subject_get_int(subject));
 }
 
 class ShortcutController {
 public:
-    ShortcutController(viewmodel::BaseViewModel& view_model, AssetManager& assets)
+    ShortcutController(viewmodel::BaseViewModel& view_model,
+                       AssetManager& assets,
+                       ThemePersistence& theme_persistence)
         : view_model_(view_model),
+          theme_persistence_(theme_persistence),
           toast_(std::make_unique<view::widgets::Toast>(lv_layer_top(), view_model, assets)),
           help_popup_(std::make_unique<view::widgets::HelpPopup>(lv_layer_top(), view_model, assets)) {
         toast_->build();
@@ -144,6 +157,7 @@ public:
         if (network_thread_.joinable()) {
             network_thread_.join();
         }
+        close_visual_tool();
     }
 
     void update() {
@@ -157,6 +171,12 @@ private:
         Morse,
         Ping,
         Dns,
+    };
+
+    enum class VisualToolMode {
+        None,
+        Flashlight,
+        ScreenTest,
     };
 
     struct NetworkQueryState {
@@ -204,6 +224,68 @@ private:
         text_tool_mode_ = TextToolMode::None;
         text_tool_buffer_.clear();
         toast_->hide();
+    }
+
+    void show_brightness_prompt() {
+        char message[128]{};
+        std::snprintf(message,
+                      sizeof(message),
+                      "Display brightness: %d%%\nZ/Left darker\nC/Right brighter\nEnter/ESC done",
+                      brightness_percent_);
+        toast_->show_persistent(message);
+    }
+
+    void start_brightness_adjustment() {
+        std::string error;
+        if (!platform::read_brightness_percent(brightness_percent_, error)) {
+            toast_->show("Brightness unavailable\n" + error,
+                         view::widgets::ToastTone::Warning,
+                         4200);
+            return;
+        }
+
+        brightness_adjustment_ = true;
+        show_brightness_prompt();
+    }
+
+    void adjust_brightness(int32_t delta) {
+        const int32_t next = std::clamp(brightness_percent_ + delta, 5, 100);
+        if (next == brightness_percent_) {
+            show_brightness_prompt();
+            return;
+        }
+
+        std::string error;
+        if (!platform::write_brightness_percent(next, error)) {
+            brightness_adjustment_ = false;
+            toast_->show("Could not change brightness\n" + error,
+                         view::widgets::ToastTone::Error,
+                         4200);
+            return;
+        }
+
+        brightness_percent_ = next;
+        show_brightness_prompt();
+    }
+
+    bool handle_brightness_key(uint32_t key, bool long_pressed) {
+        if (long_pressed) {
+            return true;
+        }
+        if (key == LV_KEY_LEFT || key == 'z') {
+            adjust_brightness(-5);
+        }
+        else if (key == LV_KEY_RIGHT || key == 'c') {
+            adjust_brightness(5);
+        }
+        else if (key == LV_KEY_ENTER || key == LV_KEY_ESC || key == LV_KEY_BACKSPACE ||
+                 key == platform::kKeyHelp) {
+            brightness_adjustment_ = false;
+            char message[48]{};
+            std::snprintf(message, sizeof(message), "Brightness set to %d%%", brightness_percent_);
+            toast_->show(message, view::widgets::ToastTone::Success, 3200);
+        }
+        return true;
     }
 
     void show_file_summary() {
@@ -606,7 +688,7 @@ private:
                 return;
             }
             case 7:
-                save_diagnostics();
+                start_brightness_adjustment();
                 return;
             default:
                 return;
@@ -671,7 +753,242 @@ private:
         toast_->show(message, view::widgets::ToastTone::Default, 4200);
     }
 
-    void show_feature_status(const platform::FeatureList& features, int32_t selection) {
+    void show_identity_and_connection() {
+        const auto device = platform::read_device_status();
+        const std::string gateway = platform::default_gateway();
+        const bool connected = device.wifi_connected || device.ethernet_connected;
+        const std::string message =
+            platform::local_identity_text() +
+            std::string("\nWi-Fi ") + (device.wifi_connected ? "connected" : "not connected") +
+            "\nEthernet " + (device.ethernet_connected ? "connected" : "not connected") +
+            "\nGateway " + gateway;
+        toast_->show(message,
+                     connected ? view::widgets::ToastTone::Default
+                               : view::widgets::ToastTone::Warning,
+                     6000);
+    }
+
+    void show_chance_prompt() {
+        static constexpr const char* kModes[] = {"DICE 2d6", "COIN", "8-BALL"};
+        const std::string message =
+            std::string(kModes[chance_mode_]) +
+            "\nENTER=roll  UP/DOWN=mode\nESC=back";
+        toast_->show_persistent(message);
+    }
+
+    void show_theme_prompt() {
+        const auto id = static_cast<model::ThemeId>(theme_selection_);
+        toast_->show_persistent(std::string("Theme: ") + view::theme_name(id) +
+                                "\nArrows / Z-C preview\nENTER save  ESC cancel");
+    }
+
+    void start_theme_picker() {
+        original_theme_selection_ = static_cast<int32_t>(view_model_.theme_id());
+        theme_selection_ = original_theme_selection_;
+        theme_picker_active_ = true;
+        theme_persistence_.previewing = true;
+        show_theme_prompt();
+    }
+
+    bool handle_theme_picker_key(uint32_t key, bool long_pressed) {
+        if (long_pressed) {
+            return true;
+        }
+        if (key == LV_KEY_ESC) {
+            view_model_.set_theme_id(
+                static_cast<model::ThemeId>(original_theme_selection_));
+            theme_persistence_.previewing = false;
+            theme_picker_active_ = false;
+            toast_->hide();
+            return true;
+        }
+        if (key == LV_KEY_UP || key == LV_KEY_LEFT || key == 'f' || key == 'z' ||
+            key == LV_KEY_DOWN || key == LV_KEY_RIGHT || key == 'x' || key == 'c') {
+            const bool previous =
+                key == LV_KEY_UP || key == LV_KEY_LEFT || key == 'f' || key == 'z';
+            const int32_t delta = previous ? -1 : 1;
+            theme_selection_ =
+                (theme_selection_ + delta + model::kThemeCount) % model::kThemeCount;
+            view_model_.set_theme_id(static_cast<model::ThemeId>(theme_selection_));
+            show_theme_prompt();
+            return true;
+        }
+        if (key == LV_KEY_ENTER) {
+            theme_picker_active_ = false;
+            theme_persistence_.previewing = false;
+            if (persist_theme(theme_persistence_, theme_selection_)) {
+                toast_->show(std::string("Theme saved: ") +
+                                 view::theme_name(static_cast<model::ThemeId>(theme_selection_)),
+                             view::widgets::ToastTone::Success,
+                             3200);
+            } else {
+                toast_->show("Theme selected but could not be saved",
+                             view::widgets::ToastTone::Error,
+                             4200);
+            }
+            return true;
+        }
+        return true;
+    }
+
+    void start_chance_tool() {
+        chance_mode_ = 0;
+        chance_tool_active_ = true;
+        toast_->hide();
+        show_chance_prompt();
+    }
+
+    bool handle_chance_key(uint32_t key, bool long_pressed) {
+        if (long_pressed) {
+            return true;
+        }
+        if (key == LV_KEY_ESC) {
+            chance_tool_active_ = false;
+            toast_->hide();
+            return true;
+        }
+        if (key == LV_KEY_UP || key == LV_KEY_DOWN || key == 'm' || key == 'M') {
+            chance_mode_ = (chance_mode_ + (key == LV_KEY_UP ? 2 : 1)) % 3;
+            show_chance_prompt();
+            return true;
+        }
+        if (key != LV_KEY_ENTER && key != ' ') {
+            return true;
+        }
+
+        std::string result;
+        if (chance_mode_ == 0) {
+            std::uniform_int_distribution<int> die(1, 6);
+            const int first = die(random_engine_);
+            const int second = die(random_engine_);
+            result = "Dice\n" + std::to_string(first) + " + " +
+                     std::to_string(second) + " = " +
+                     std::to_string(first + second);
+        }
+        else if (chance_mode_ == 1) {
+            std::uniform_int_distribution<int> coin(0, 1);
+            result = coin(random_engine_) ? "Coin\nHEADS" : "Coin\nTAILS";
+        }
+        else {
+            static constexpr const char* kAnswers[] = {
+                "Yes", "Absolutely", "No", "Doubtful", "Ask again later",
+                "Signs point to yes", "Very doubtful", "Without a doubt",
+                "My reply is no", "As I see it, yes", "Cannot predict",
+                "Outlook good", "Outlook not so good"
+            };
+            constexpr std::size_t kAnswerCount = sizeof(kAnswers) / sizeof(kAnswers[0]);
+            std::uniform_int_distribution<std::size_t> answer(0, kAnswerCount - 1);
+            result = std::string("8-ball\n") + kAnswers[answer(random_engine_)];
+        }
+        toast_->show_persistent(result + "\nENTER=roll  UP/DOWN=mode\nESC=back");
+        return true;
+    }
+
+    bool create_visual_overlay() {
+        toast_->hide();
+        help_popup_->hide();
+        overlay_ = lv_obj_create(lv_screen_active());
+        if (!overlay_) {
+            return false;
+        }
+        lv_obj_remove_style_all(overlay_);
+        lv_obj_set_size(overlay_, LV_PCT(100), LV_PCT(100));
+        lv_obj_center(overlay_);
+        lv_obj_clear_flag(overlay_, LV_OBJ_FLAG_SCROLLABLE);
+        lv_obj_set_style_bg_opa(overlay_, LV_OPA_COVER, 0);
+        screen_test_label_ = lv_label_create(overlay_);
+        if (!screen_test_label_) {
+            close_visual_tool();
+            return false;
+        }
+        lv_obj_center(screen_test_label_);
+        return true;
+    }
+
+    void close_visual_tool() {
+        if (overlay_ && lv_obj_is_valid(overlay_)) {
+            lv_obj_delete(overlay_);
+        }
+        overlay_ = nullptr;
+        screen_test_label_ = nullptr;
+        visual_tool_mode_ = VisualToolMode::None;
+    }
+
+    void start_flashlight() {
+        visual_tool_mode_ = VisualToolMode::Flashlight;
+        if (!create_visual_overlay()) {
+            visual_tool_mode_ = VisualToolMode::None;
+            toast_->show("Flashlight could not open",
+                         view::widgets::ToastTone::Error,
+                         3200);
+            return;
+        }
+        lv_obj_set_style_bg_color(overlay_, lv_color_white(), 0);
+        lv_label_set_text(screen_test_label_, "FLASHLIGHT\nPress any key to exit");
+        lv_obj_set_style_text_color(screen_test_label_, lv_color_black(), 0);
+    }
+
+    void update_screen_test() {
+        static constexpr uint32_t kColors[] = {
+            0xFF0000, 0x00FF00, 0x0000FF, 0xFFFFFF, 0x000000, 0x00FFFF, 0xFFBF00
+        };
+        static constexpr const char* kNames[] = {
+            "RED", "GREEN", "BLUE", "WHITE", "BLACK", "CYAN", "AMBER"
+        };
+        const uint32_t color = kColors[screen_test_index_];
+        lv_obj_set_style_bg_color(overlay_, lv_color_hex(color), 0);
+        lv_obj_set_style_text_color(screen_test_label_,
+                                    screen_test_index_ == 1 ||
+                                            screen_test_index_ == 3 ||
+                                            screen_test_index_ == 5 ||
+                                            screen_test_index_ == 6
+                                        ? lv_color_black()
+                                        : lv_color_white(),
+                                    0);
+        char message[64]{};
+        std::snprintf(message,
+                      sizeof(message),
+                      "%s  %d/7\nAny key=next  ESC=exit",
+                      kNames[screen_test_index_],
+                      screen_test_index_ + 1);
+        lv_label_set_text(screen_test_label_, message);
+    }
+
+    void start_screen_test() {
+        visual_tool_mode_ = VisualToolMode::ScreenTest;
+        screen_test_index_ = 0;
+        if (!create_visual_overlay()) {
+            visual_tool_mode_ = VisualToolMode::None;
+            toast_->show("Screen test could not open",
+                         view::widgets::ToastTone::Error,
+                         3200);
+            return;
+        }
+        update_screen_test();
+    }
+
+    bool handle_visual_tool_key(uint32_t key, bool long_pressed) {
+        if (long_pressed) {
+            return true;
+        }
+        if (visual_tool_mode_ == VisualToolMode::Flashlight || key == LV_KEY_ESC) {
+            close_visual_tool();
+            return true;
+        }
+        screen_test_index_ = (screen_test_index_ + 1) % 7;
+        update_screen_test();
+        return true;
+    }
+
+    template <typename Features>
+    void show_feature_status(const Features& features, int32_t selection) {
+        if (selection < 0 ||
+            static_cast<std::size_t>(selection) >= features.size()) {
+            toast_->show("Feature selection is out of range",
+                         view::widgets::ToastTone::Error,
+                         3200);
+            return;
+        }
         const auto& feature = features[static_cast<std::size_t>(selection)];
         std::string message = std::string(feature.name) + "\n";
         if (feature.available) {
@@ -783,6 +1100,19 @@ private:
     }
 
     bool handle_key(uint32_t key, bool long_pressed) {
+        if (theme_picker_active_) {
+            return handle_theme_picker_key(key, long_pressed);
+        }
+        if (chance_tool_active_) {
+            return handle_chance_key(key, long_pressed);
+        }
+        if (visual_tool_mode_ != VisualToolMode::None) {
+            return handle_visual_tool_key(key, long_pressed);
+        }
+        if (brightness_adjustment_ && key != platform::kKeyPrintScreen) {
+            return handle_brightness_key(key, long_pressed);
+        }
+
         if (text_tool_mode_ != TextToolMode::None && key == platform::kKeyHelp) {
             cancel_text_tool();
         }
@@ -792,28 +1122,15 @@ private:
         }
 
         if (view_model_.current_page() == model::AppPage::Apple) {
-            if (key == LV_KEY_UP || key == 'f') {
+            if (key == LV_KEY_UP || key == 'f' || key == LV_KEY_LEFT || key == 'z') {
                 if (!long_pressed) {
-                    view_model_.move_menu_selection(-2);
+                    view_model_.move_menu_selection(-1);
                 }
                 return true;
             }
-            if (key == LV_KEY_DOWN || key == 'x') {
+            if (key == LV_KEY_DOWN || key == 'x' || key == LV_KEY_RIGHT || key == 'c') {
                 if (!long_pressed) {
-                    view_model_.move_menu_selection(2);
-                }
-                return true;
-            }
-            if (key == LV_KEY_LEFT || key == LV_KEY_RIGHT) {
-                if (!long_pressed) {
-                    const int32_t selection = view_model_.menu_selection();
-                    if (key == LV_KEY_LEFT && selection % 2 == 1) {
-                        view_model_.set_menu_selection(selection - 1);
-                    }
-                    else if (key == LV_KEY_RIGHT && selection % 2 == 0 &&
-                             selection < 6) {
-                        view_model_.set_menu_selection(selection + 1);
-                    }
+                    view_model_.move_menu_selection(1);
                 }
                 return true;
             }
@@ -851,19 +1168,20 @@ private:
         if (view_model_.current_page() != model::AppPage::Apple) {
             if (key == LV_KEY_UP || key == 'f') {
                 if (!long_pressed) {
-                    view_model_.move_tool_selection(-2);
+                    view_model_.move_tool_selection(-1);
                 }
                 return true;
             }
             if (key == LV_KEY_DOWN || key == 'x') {
                 if (!long_pressed) {
-                    view_model_.move_tool_selection(2);
+                    view_model_.move_tool_selection(1);
                 }
                 return true;
             }
-            if (key == LV_KEY_LEFT || key == LV_KEY_RIGHT) {
+            if (key == LV_KEY_LEFT || key == LV_KEY_RIGHT || key == 'z' || key == 'c') {
                 if (!long_pressed) {
-                    view_model_.move_tool_selection(key == LV_KEY_LEFT ? -1 : 1);
+                    view_model_.move_tool_selection(
+                        key == LV_KEY_LEFT || key == 'z' ? -1 : 1);
                 }
                 return true;
             }
@@ -906,7 +1224,27 @@ private:
                                 show_mac_addresses();
                                 break;
                             case 7:
-                                save_diagnostics();
+                                show_identity_and_connection();
+                                break;
+                            case 8:
+                                start_flashlight();
+                                break;
+                            case 9:
+                                start_chance_tool();
+                                break;
+                            case 10:
+                                start_screen_test();
+                                break;
+                            case 11:
+                                start_theme_picker();
+                                break;
+                            case 12:
+                            case 13:
+                            case 14:
+                            case 15:
+                            case 16:
+                                show_feature_status(platform::tools_features(),
+                                                   view_model_.tool_selection());
                                 break;
                             default:
                                 break;
@@ -914,7 +1252,11 @@ private:
                         return true;
                     }
                     if (view_model_.current_page() == model::AppPage::Butter) {
-                        show_system_status(view_model_.tool_selection());
+                        if (view_model_.tool_selection() == 8) {
+                            start_theme_picker();
+                        } else {
+                            show_system_status(view_model_.tool_selection());
+                        }
                         return true;
                     }
                     if (view_model_.current_page() == model::AppPage::Network) {
@@ -938,9 +1280,8 @@ private:
                                 start_text_tool(TextToolMode::Dns);
                                 break;
                             case 4:
-                                toast_->show("Port scanning is disabled",
-                                             view::widgets::ToastTone::Warning,
-                                             3200);
+                                show_feature_status(platform::network_features(),
+                                                    view_model_.tool_selection());
                                 break;
                             case 5:
                                 show_system_status(3);
@@ -1098,6 +1439,7 @@ private:
     }
 
     viewmodel::BaseViewModel& view_model_;
+    ThemePersistence& theme_persistence_;
     std::unique_ptr<view::widgets::Toast> toast_;
     std::unique_ptr<view::widgets::HelpPopup> help_popup_;
     std::string text_tool_buffer_;
@@ -1107,8 +1449,22 @@ private:
     std::chrono::steady_clock::time_point stopwatch_started_{};
     std::chrono::steady_clock::duration stopwatch_elapsed_{};
     bool stopwatch_running_{false};
+    bool brightness_adjustment_{false};
+    int32_t brightness_percent_{0};
     uint32_t exit_key_pressed_{0};
     bool exit_armed_{false};
+    bool chance_tool_active_{false};
+    int32_t chance_mode_{0};
+    std::mt19937 random_engine_{
+        static_cast<std::mt19937::result_type>(
+            std::chrono::steady_clock::now().time_since_epoch().count())};
+    VisualToolMode visual_tool_mode_{VisualToolMode::None};
+    lv_obj_t* overlay_{nullptr};
+    lv_obj_t* screen_test_label_{nullptr};
+    int32_t screen_test_index_{0};
+    bool theme_picker_active_{false};
+    int32_t theme_selection_{0};
+    int32_t original_theme_selection_{0};
 };
 
 #if !USE_DESKTOP
@@ -1171,10 +1527,14 @@ int Application::run() {
     ApplicationConfig config;
     std::string config_error;
     if (load_application_config(loaded_config_path, config, config_error)) {
-        view_model.set_dark_mode(config.dark_mode);
-        LOG_INFO("loaded config: {} (dark_mode={})",
+        if (config.theme_id_set) {
+            view_model.set_theme_id(static_cast<model::ThemeId>(config.theme_id));
+        } else {
+            view_model.set_dark_mode(config.dark_mode);
+        }
+        LOG_INFO("loaded config: {} (theme={})",
                  loaded_config_path,
-                 config.dark_mode ? "yes" : "no");
+                 view::theme_name(view_model.theme_id()));
     } else {
         LOG_WARN("failed to load config {}: {}; using defaults", loaded_config_path, config_error);
     }
@@ -1195,7 +1555,7 @@ int Application::run() {
 
     auto* standard_font = assets.load_standard_font(14);
     view::apply_lvgl_theme(display,
-                           view_model.is_dark_mode(),
+                           view_model.theme_id(),
                            standard_font ? standard_font : LV_FONT_DEFAULT);
 
 #if USE_DESKTOP
@@ -1204,15 +1564,19 @@ int Application::run() {
 
     ScreenManager screen_manager(view_model, assets);
     screen_manager.start();
-    ShortcutController shortcuts(view_model, assets);
+    ThemePersistence theme_persistence{
+        user_config_path, config, static_cast<int32_t>(view_model.theme_id())};
+    theme_persistence.config.theme_id = static_cast<int32_t>(view_model.theme_id());
+    theme_persistence.config.theme_id_set = true;
+    theme_persistence.config.dark_mode = view_model.is_dark_mode();
+    ShortcutController shortcuts(view_model, assets, theme_persistence);
 
-    DarkModePersistence dark_mode_persistence{user_config_path, view_model.is_dark_mode()};
     auto* dark_mode_observer =
         store_capture_mode
             ? nullptr
-            : lv_subject_add_observer(view_model.dark_mode_subject(),
-                                      persist_dark_mode_observer,
-                                      &dark_mode_persistence);
+            : lv_subject_add_observer(view_model.theme_id_subject(),
+                                      persist_theme_observer,
+                                      &theme_persistence);
 
     bool running = true;
     int exit_code = 0;

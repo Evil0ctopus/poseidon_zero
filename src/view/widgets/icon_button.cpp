@@ -25,8 +25,6 @@ IconButton::IconButton(lv_obj_t* parent,
                        int32_t height,
                        const char* text,
                        const lv_font_t* font,
-                       lv_color_t light_color,
-                       lv_color_t dark_color,
                        lv_event_cb_t click_cb,
                        void* user_data,
                        bool show_indicator)
@@ -36,8 +34,6 @@ IconButton::IconButton(lv_obj_t* parent,
       height_(height),
       text_(text ? text : ""),
       font_(font),
-      light_color_(light_color),
-      dark_color_(dark_color),
       click_cb_(click_cb),
       user_data_(user_data),
       show_indicator_(show_indicator) {}
@@ -78,8 +74,8 @@ void IconButton::build() {
         lv_obj_align(indicator_, LV_ALIGN_BOTTOM_MID, 0, kIndicatorY);
     }
 
-    lv_subject_add_observer_obj(view_model_.dark_mode_subject(), theme_observer_cb, core_obj_, this);
-    apply_theme(view_model_.is_dark_mode());
+    lv_subject_add_observer_obj(view_model_.theme_id_subject(), theme_observer_cb, core_obj_, this);
+    apply_theme(view_model_.theme_id());
 }
 
 void IconButton::set_text(const char* text) {
@@ -111,7 +107,7 @@ void IconButton::set_enabled(bool enabled) {
     else {
         lv_obj_clear_flag(core_obj_, LV_OBJ_FLAG_CLICKABLE);
     }
-    apply_theme(view_model_.is_dark_mode());
+    apply_theme(view_model_.theme_id());
 }
 
 void IconButton::theme_observer_cb(lv_observer_t* observer, lv_subject_t* subject) {
@@ -120,22 +116,23 @@ void IconButton::theme_observer_cb(lv_observer_t* observer, lv_subject_t* subjec
         return;
     }
 
-    button->apply_theme(lv_subject_get_int(subject) != 0);
+    button->apply_theme(static_cast<model::ThemeId>(lv_subject_get_int(subject)));
 }
 
-void IconButton::apply_theme(bool dark_mode) {
+void IconButton::apply_theme(model::ThemeId theme_id) {
     if (!core_obj_ || !label_) {
         return;
     }
 
     lv_obj_set_style_bg_opa(core_obj_, LV_OPA_TRANSP, 0);
+    const auto colors = view::palette(theme_id);
     if (!enabled_) {
-        lv_obj_set_style_text_color(label_, view::palette(dark_mode).text_disabled, 0);
+        lv_obj_set_style_text_color(label_, colors.text_disabled, 0);
         apply_indicator_style();
         return;
     }
 
-    lv_obj_set_style_text_color(label_, dark_mode ? dark_color_ : light_color_, 0);
+    lv_obj_set_style_text_color(label_, colors.text, 0);
     apply_indicator_style();
 }
 
@@ -146,7 +143,9 @@ void IconButton::apply_indicator_style() {
 
     const bool show_indicator = enabled_ && !text_.empty();
     lv_obj_set_style_bg_opa(indicator_, show_indicator ? LV_OPA_70 : LV_OPA_TRANSP, 0);
-    lv_obj_set_style_bg_color(indicator_, view_model_.is_dark_mode() ? dark_color_ : light_color_, 0);
+    lv_obj_set_style_bg_color(indicator_,
+                              view::palette(view_model_.theme_id()).primary,
+                              0);
     lv_obj_align(indicator_, LV_ALIGN_BOTTOM_MID, 0, kIndicatorY);
 }
 

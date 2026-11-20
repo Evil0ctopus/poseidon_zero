@@ -34,7 +34,27 @@ void BaseScreen::init() {
     lv_obj_clear_flag(root_, LV_OBJ_FLAG_SCROLLABLE);
 
     lv_obj_set_size(root_, view::kScreenWidth, view::kScreenHeight);
-    reactive::bind_theme(root_, view_model_.dark_mode_subject(), reactive::ThemeRole::Screen);
+    reactive::bind_theme(root_, view_model_.theme_id_subject(), reactive::ThemeRole::Screen);
+
+    auto* upper_glow = lv_obj_create(root_);
+    lv_obj_remove_style_all(upper_glow);
+    lv_obj_set_size(upper_glow, 132, 132);
+    lv_obj_align(upper_glow, LV_ALIGN_TOP_RIGHT, 48, -68);
+    lv_obj_clear_flag(upper_glow, LV_OBJ_FLAG_CLICKABLE);
+    lv_obj_clear_flag(upper_glow, LV_OBJ_FLAG_SCROLLABLE);
+    reactive::bind_theme(upper_glow,
+                         view_model_.theme_id_subject(),
+                         reactive::ThemeRole::GlowPrimary);
+
+    auto* lower_glow = lv_obj_create(root_);
+    lv_obj_remove_style_all(lower_glow);
+    lv_obj_set_size(lower_glow, 108, 108);
+    lv_obj_align(lower_glow, LV_ALIGN_BOTTOM_LEFT, -54, 60);
+    lv_obj_clear_flag(lower_glow, LV_OBJ_FLAG_CLICKABLE);
+    lv_obj_clear_flag(lower_glow, LV_OBJ_FLAG_SCROLLABLE);
+    reactive::bind_theme(lower_glow,
+                         view_model_.theme_id_subject(),
+                         reactive::ThemeRole::GlowInfo);
 
     title_bar_ = std::make_unique<view::widgets::TitleBar>(root_, view_model_, assets_);
     title_bar_->build();
@@ -47,7 +67,7 @@ void BaseScreen::init() {
     lv_obj_set_size(content_, LV_PCT(100), view::kScreenHeight - view::kTitleBarHeight - view::kNavBarHeight);
     lv_obj_align(content_, LV_ALIGN_TOP_MID, 0, view::kTitleBarHeight);
     lv_obj_clear_flag(content_, LV_OBJ_FLAG_SCROLLABLE);
-    reactive::bind_theme(content_, view_model_.dark_mode_subject(), reactive::ThemeRole::Surface);
+    lv_obj_clear_flag(content_, LV_OBJ_FLAG_CLICKABLE);
 
     build_content(content_);
 }

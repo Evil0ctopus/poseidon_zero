@@ -10,6 +10,27 @@
 
 namespace model {
 
+inline constexpr int32_t kStandardToolItemCount = 8;
+inline constexpr int32_t kSystemToolItemCount = 9;
+inline constexpr int32_t kToolsPageItemCount = 17;
+
+enum class ThemeId : int32_t {
+    Poseidon = 0,
+    Matrix,
+    EInk,
+    Synthwave,
+    Phantom,
+    Blood,
+    AmberCrt,
+    NightCity,
+    Solaris,
+    NordicFrost,
+    GhostPurple,
+    ZeroLight,
+};
+
+inline constexpr int32_t kThemeCount = 12;
+
 enum class AppPage {
     Apple  = 0,
     Butter = 1,
@@ -29,6 +50,8 @@ public:
     bool dark_mode() const;
     void set_dark_mode(bool enabled);
     void toggle_dark_mode();
+    ThemeId theme_id() const;
+    void set_theme_id(ThemeId id);
 
     AppPage current_page() const;
     void set_current_page(AppPage page);
@@ -42,7 +65,7 @@ public:
     void move_tool_selection(int32_t delta);
 
 private:
-    bool dark_mode_ = false;
+    ThemeId theme_id_ = ThemeId::ZeroLight;
     AppPage current_page_ = AppPage::Apple;
     int32_t menu_selection_ = 0;
     int32_t tool_selection_ = 0;

@@ -22,17 +22,19 @@ struct HelpRow {
 };
 
 constexpr std::array<HelpRow, 5> kAppleRows = {{
-    {"HOLD ESC / 4", "Exit"},
+    {"ARROWS", "Select; ENTER opens"},
+    {"4 / HOLD ESC", "Exit"},
     {"5", "Text weight"},
-    {"6", "Light / dark"},
-    {"7", "Version info"},
-    {"8", "Open counter"},
+    {"6", "Light / dark theme"},
+    {"7 / 8", "Info / system status"},
 }};
 
-constexpr std::array<HelpRow, 3> kButterRows = {{
-    {"ESC", "Back to home"},
-    {"Z / LEFT", "Decrease"},
-    {"C / RIGHT", "Increase"},
+constexpr std::array<HelpRow, 5> kMenuRows = {{
+    {"UP / DOWN", "Select previous / next"},
+    {"Z / LEFT", "Select previous"},
+    {"C / RIGHT", "Select next"},
+    {"ENTER", "Open / activate"},
+    {"ESC", "Back"},
 }};
 
 } // namespace
@@ -123,7 +125,7 @@ void HelpPopup::build() {
     lv_obj_set_size(footer_, LV_SIZE_CONTENT, 12);
     lv_obj_align(footer_, LV_ALIGN_BOTTOM_LEFT, 12, -7);
 
-    lv_subject_add_observer_obj(view_model_.dark_mode_subject(),
+    lv_subject_add_observer_obj(view_model_.theme_id_subject(),
                                 theme_observer_cb,
                                 core_obj_,
                                 this);
@@ -156,16 +158,44 @@ bool HelpPopup::visible() const {
 }
 
 void HelpPopup::update_rows(model::AppPage page) {
-    const bool butter = page == model::AppPage::Butter;
-    lv_label_set_text(page_badge_, butter ? "COUNTER" : "HOME");
+    const bool home = page == model::AppPage::Apple;
+    const char* badge = "MENU";
+    switch (page) {
+        case model::AppPage::Apple:
+            badge = "HOME";
+            break;
+        case model::AppPage::Butter:
+            badge = "SYSTEM";
+            break;
+        case model::AppPage::Network:
+            badge = "NETWORK";
+            break;
+        case model::AppPage::Wireless:
+            badge = "WIRELESS";
+            break;
+        case model::AppPage::Infrared:
+            badge = "INFRARED";
+            break;
+        case model::AppPage::Expansion:
+            badge = "EXPANSION";
+            break;
+        case model::AppPage::Tools:
+            badge = "TOOLS";
+            break;
+        case model::AppPage::Media:
+            badge = "MEDIA";
+            break;
+    }
+    lv_label_set_text(page_badge_, badge);
     for (std::size_t i = 0; i < rows_.size(); ++i) {
-        const bool row_visible = butter ? i < kButterRows.size() : i < kAppleRows.size();
+        const auto& help_rows = home ? kAppleRows : kMenuRows;
+        const bool row_visible = i < help_rows.size();
         if (!row_visible) {
             lv_obj_add_flag(rows_[i].row, LV_OBJ_FLAG_HIDDEN);
             continue;
         }
         lv_obj_remove_flag(rows_[i].row, LV_OBJ_FLAG_HIDDEN);
-        const auto& row = butter ? kButterRows[i] : kAppleRows[i];
+        const auto& row = help_rows[i];
         lv_label_set_text(rows_[i].key, row.key);
         lv_label_set_text(rows_[i].action, row.action);
     }
@@ -175,7 +205,7 @@ void HelpPopup::apply_theme() {
     if (!panel_) {
         return;
     }
-    const auto colors = view::palette(view_model_.is_dark_mode());
+    const auto colors = view::palette(view_model_.theme_id());
     lv_obj_set_style_bg_color(panel_, colors.surface, 0);
     lv_obj_set_style_border_color(panel_, colors.border, 0);
     lv_obj_set_style_shadow_color(panel_, lv_color_black(), 0);

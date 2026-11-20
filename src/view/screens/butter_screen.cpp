@@ -16,7 +16,6 @@
 #include "tool_status.h"
 #include "safe_tools.h"
 #include "theme.h"
-#include "ui_const.h"
 #include <cstdio>
 #include <string>
 
@@ -24,12 +23,36 @@ namespace screen {
 namespace {
 
 struct ToolSelectionBinding {
-    lv_obj_t* rows[8]{};
+    lv_obj_t* rows[model::kToolsPageItemCount]{};
+    int32_t row_count{model::kStandardToolItemCount};
     viewmodel::BaseViewModel* view_model{nullptr};
 };
 
 void cleanup_tool_selection(lv_event_t* event) {
     delete static_cast<ToolSelectionBinding*>(lv_event_get_user_data(event));
+}
+
+void apply_tool_selection_style(ToolSelectionBinding* binding,
+                                int32_t selected,
+                                bool scroll_selected) {
+    if (!binding || !binding->view_model) {
+        return;
+    }
+    const auto colors = view::palette(binding->view_model->theme_id());
+    for (int32_t index = 0; index < binding->row_count; ++index) {
+        if (!lv_obj_is_valid(binding->rows[index])) {
+            continue;
+        }
+        lv_obj_set_style_border_color(binding->rows[index],
+                                      index == selected ? colors.primary : colors.border,
+                                      0);
+        lv_obj_set_style_border_width(binding->rows[index],
+                                      index == selected ? 2 : 1,
+                                      0);
+        if (scroll_selected && index == selected) {
+            lv_obj_scroll_to_view(binding->rows[index], LV_ANIM_ON);
+        }
+    }
 }
 
 void tool_selection_observer(lv_observer_t* observer, lv_subject_t* subject) {
@@ -38,16 +61,15 @@ void tool_selection_observer(lv_observer_t* observer, lv_subject_t* subject) {
         return;
     }
 
-    const int32_t selected = lv_subject_get_int(subject);
-    for (int32_t index = 0; index < 8; ++index) {
-        if (!lv_obj_is_valid(binding->rows[index])) {
-            continue;
-        }
-        lv_obj_set_style_border_color(
-            binding->rows[index],
-            index == selected ? lv_color_hex(view::color::dark::kPrimary)
-                              : lv_color_hex(view::color::dark::kBorder),
-            0);
+    apply_tool_selection_style(binding, lv_subject_get_int(subject), true);
+}
+
+void tool_theme_observer(lv_observer_t* observer, lv_subject_t*) {
+    auto* binding = static_cast<ToolSelectionBinding*>(lv_observer_get_user_data(observer));
+    if (binding && binding->view_model) {
+        apply_tool_selection_style(binding,
+                                   binding->view_model->tool_selection(),
+                                   false);
     }
 }
 
@@ -58,7 +80,7 @@ void tool_row_clicked(lv_event_t* event) {
         return;
     }
 
-    for (int32_t index = 0; index < 8; ++index) {
+    for (int32_t index = 0; index < binding->row_count; ++index) {
         if (binding->rows[index] == row) {
             binding->view_model->set_tool_selection(index);
             return;
@@ -98,12 +120,20 @@ void ButterScreen::refresh_tool_values_cb(lv_timer_t* timer) {
 void ButterScreen::build_content(lv_obj_t* content) {
     lv_obj_set_flex_flow(content, LV_FLEX_FLOW_COLUMN);
     lv_obj_set_flex_align(content, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
-    lv_obj_set_style_pad_top(content, 2, 0);
+    lv_obj_set_style_pad_top(content, 1, 0);
     lv_obj_set_style_pad_row(content, 2, 0);
 
     auto* heading = lv_label_create(content);
     const char* title = "SYSTEM TOOLS";
-    const char* tools[8] = {
+    constexpr int32_t kMaxToolCount = model::kToolsPageItemCount;
+    constexpr int32_t kStandardToolCount = model::kStandardToolItemCount;
+    const int32_t tool_count =
+        view_model().current_page() == model::AppPage::Tools
+            ? kMaxToolCount
+            : view_model().current_page() == model::AppPage::Butter
+                  ? model::kSystemToolItemCount
+            : kStandardToolCount;
+    const char* tools[kMaxToolCount] = {
         "Memory",
         "Wi-Fi",
         "Bluetooth",
@@ -112,6 +142,27 @@ void ButterScreen::build_content(lv_obj_t* content) {
         "Battery",
         "Clock",
         "Diagnostics",
+        "Flashlight",
+        "Dice / 8-ball",
+        "Screen test",
+        "Themes",
+        "Ambient preview",
+        "Layout toggle",
+        "Screensaver toggle",
+        "Screensaver picker",
+        "Sound settings",
+    };
+    char feature_label_storage[kMaxToolCount][64]{};
+    const auto set_feature_labels = [&tools, &feature_label_storage](
+                                        const auto& features,
+                                        int32_t count) {
+        for (int32_t index = 0; index < count; ++index) {
+            std::snprintf(feature_label_storage[index],
+                          sizeof(feature_label_storage[index]),
+                          features[index].available ? "%s" : "%s [OFF]",
+                          features[index].name);
+            tools[index] = feature_label_storage[index];
+        }
     };
     char file_summary[40] = "Files";
     char gateway_summary[64] = "Gateway";
@@ -123,45 +174,35 @@ void ButterScreen::build_content(lv_obj_t* content) {
             title = "NETWORK";
             {
                 const auto features = platform::network_features();
-                for (int32_t index = 0; index < 8; ++index) {
-                    tools[index] = features[index].name;
-                }
+                set_feature_labels(features, tool_count);
             }
             break;
         case model::AppPage::Wireless:
             title = "WIRELESS";
             {
                 const auto features = platform::wireless_features();
-                for (int32_t index = 0; index < 8; ++index) {
-                    tools[index] = features[index].name;
-                }
+                set_feature_labels(features, tool_count);
             }
             break;
         case model::AppPage::Infrared:
             title = "INFRARED";
             {
                 const auto features = platform::infrared_features();
-                for (int32_t index = 0; index < 8; ++index) {
-                    tools[index] = features[index].name;
-                }
+                set_feature_labels(features, tool_count);
             }
             break;
         case model::AppPage::Expansion:
             title = "EXPANSION";
             {
                 const auto features = platform::expansion_features();
-                for (int32_t index = 0; index < 8; ++index) {
-                    tools[index] = features[index].name;
-                }
+                set_feature_labels(features, tool_count);
             }
             break;
         case model::AppPage::Tools:
             title = "TOOLS";
             {
                 const auto features = platform::tools_features();
-                for (int32_t index = 0; index < 8; ++index) {
-                    tools[index] = features[index].name;
-                }
+                set_feature_labels(features, tool_count);
                 const auto home = platform::list_directory("/home");
                 const auto media = platform::list_directory("/media");
                 std::snprintf(file_summary,
@@ -218,9 +259,7 @@ void ButterScreen::build_content(lv_obj_t* content) {
             title = "MEDIA";
             {
                 const auto features = platform::media_features();
-                for (int32_t index = 0; index < 8; ++index) {
-                    tools[index] = features[index].name;
-                }
+                set_feature_labels(features, tool_count);
             }
             break;
         default:
@@ -232,7 +271,9 @@ void ButterScreen::build_content(lv_obj_t* content) {
     lv_obj_set_style_text_font(heading,
                                heading_font ? heading_font : &lv_font_montserrat_14,
                                0);
-    reactive::bind_theme(heading, view_model().dark_mode_subject(), reactive::ThemeRole::Text);
+    lv_obj_set_width(heading, 292);
+    lv_obj_set_style_text_letter_space(heading, 1, 0);
+    reactive::bind_theme(heading, view_model().theme_id_subject(), reactive::ThemeRole::Text);
 
     const auto memory = platform::read_memory_status();
     const auto wifi = platform::read_capability(platform::Capability::Wifi);
@@ -259,7 +300,8 @@ void ButterScreen::build_content(lv_obj_t* content) {
         tools[4] = storage.micro_sd_present ? "Storage  available" : "Storage  no card";
         tools[5] = "Battery status";
         tools[6] = "System clock";
-        tools[7] = "Support report";
+        tools[7] = "Display brightness";
+        tools[8] = "Themes";
     } else if (view_model().current_page() == model::AppPage::Network) {
         const auto interfaces = platform::list_network_interfaces();
         tools[0] = interfaces.empty() ? "No network interfaces" : "Interfaces  available";
@@ -282,67 +324,60 @@ void ButterScreen::build_content(lv_obj_t* content) {
         tools[3] = "GATT";
         tools[4] = "Tracker scan";
     }
-    constexpr int32_t kToolCount = 8;
-    constexpr int32_t kColumnCount = 2;
-    constexpr int32_t kRowCount = kToolCount / kColumnCount;
-    lv_obj_t* row_objects[kToolCount] = {};
-    for (int32_t grid_row = 0; grid_row < kRowCount; ++grid_row) {
-        auto* row_group = lv_obj_create(content);
-        lv_obj_remove_style_all(row_group);
-        lv_obj_set_size(row_group, 270, 16);
-        lv_obj_set_flex_flow(row_group, LV_FLEX_FLOW_ROW);
-        lv_obj_set_flex_align(row_group,
-                              LV_FLEX_ALIGN_START,
-                              LV_FLEX_ALIGN_CENTER,
-                              LV_FLEX_ALIGN_CENTER);
-        lv_obj_set_style_pad_all(row_group, 0, 0);
-        lv_obj_set_style_pad_column(row_group, 4, 0);
+    auto* list = lv_obj_create(content);
+    lv_obj_remove_style_all(list);
+    lv_obj_set_size(list, 292, 86);
+    lv_obj_set_flex_flow(list, LV_FLEX_FLOW_COLUMN);
+    lv_obj_set_flex_align(list, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_START);
+    lv_obj_set_style_pad_all(list, 3, 0);
+    lv_obj_set_style_pad_row(list, 2, 0);
+    lv_obj_set_scroll_dir(list, LV_DIR_VER);
+    lv_obj_set_scrollbar_mode(list, LV_SCROLLBAR_MODE_AUTO);
+    lv_obj_add_flag(list, LV_OBJ_FLAG_SCROLLABLE);
+    reactive::bind_theme(list,
+                         view_model().theme_id_subject(),
+                         reactive::ThemeRole::Surface);
 
-        for (int32_t column = 0; column < kColumnCount; ++column) {
-            const int32_t index = grid_row * kColumnCount + column;
-            auto* row = lv_button_create(row_group);
-            row_objects[index] = row;
-            lv_obj_remove_style_all(row);
-            lv_obj_set_size(row, 133, 16);
-            lv_obj_set_style_radius(row, 3, 0);
-            lv_obj_set_style_border_width(row, 1, 0);
-            lv_obj_set_style_pad_left(row, 4, 0);
-            lv_obj_set_style_bg_opa(row, LV_OPA_COVER, 0);
-            reactive::bind_theme(row,
-                                 view_model().dark_mode_subject(),
-                                 reactive::ThemeRole::Button);
+    lv_obj_t* row_objects[kMaxToolCount] = {};
+    for (int32_t index = 0; index < tool_count; ++index) {
+        auto* row = lv_button_create(list);
+        row_objects[index] = row;
+        lv_obj_remove_style_all(row);
+        lv_obj_set_size(row, 280, 18);
+        lv_obj_set_style_radius(row, 3, 0);
+        lv_obj_set_style_border_width(row, 1, 0);
+        lv_obj_set_style_pad_left(row, 5, 0);
+        lv_obj_set_style_bg_opa(row, LV_OPA_COVER, 0);
+        reactive::bind_theme(row,
+                             view_model().theme_id_subject(),
+                             reactive::ThemeRole::Button);
 
-            auto* label = lv_label_create(row);
-            lv_label_set_text(label, tools[index]);
-            const lv_font_t* label_font =
-                assets().load_standard_font(12, app::StandardFontWeight::Regular);
-            lv_obj_set_style_text_font(label,
-                                       label_font ? label_font : &lv_font_montserrat_12,
-                                       0);
-            lv_obj_set_width(label, 125);
-            lv_obj_align(label, LV_ALIGN_LEFT_MID, 0, 0);
-            reactive::bind_theme(label,
-                                 view_model().dark_mode_subject(),
-                                 reactive::ThemeRole::Text);
-            if (view_model().current_page() == model::AppPage::Tools) {
-                if (index == 2) {
-                    clock_label_ = label;
-                } else if (index == 4) {
-                    uptime_label_ = label;
-                }
+        auto* label = lv_label_create(row);
+        lv_label_set_text(label, tools[index]);
+        const lv_font_t* label_font =
+            assets().load_standard_font(12, app::StandardFontWeight::Regular);
+        lv_obj_set_style_text_font(label,
+                                   label_font ? label_font : &lv_font_montserrat_12,
+                                   0);
+        lv_obj_set_width(label, 270);
+        lv_label_set_long_mode(label, LV_LABEL_LONG_DOT);
+        lv_obj_align(label, LV_ALIGN_LEFT_MID, 0, 0);
+        reactive::bind_theme(label,
+                             view_model().theme_id_subject(),
+                             reactive::ThemeRole::Text);
+        if (view_model().current_page() == model::AppPage::Tools) {
+            if (index == 2) {
+                clock_label_ = label;
+            } else if (index == 4) {
+                uptime_label_ = label;
             }
-            lv_obj_set_style_border_color(
-                row,
-                index == view_model().tool_selection()
-                    ? lv_color_hex(view::color::dark::kPrimary)
-                    : lv_color_hex(view::color::dark::kBorder),
-                0);
         }
     }
 
     auto* binding = new ToolSelectionBinding{};
     binding->view_model = &view_model();
-    for (int32_t index = 0; index < kToolCount; ++index) {
+    binding->row_count = tool_count;
+    for (int32_t index = 0; index < tool_count; ++index) {
         binding->rows[index] = row_objects[index];
         lv_obj_add_event_cb(row_objects[index], tool_row_clicked, LV_EVENT_CLICKED, binding);
     }
@@ -351,6 +386,16 @@ void ButterScreen::build_content(lv_obj_t* content) {
                                 tool_selection_observer,
                                 content,
                                 binding);
+    lv_subject_add_observer_obj(view_model().theme_id_subject(),
+                                tool_theme_observer,
+                                content,
+                                binding);
+    lv_obj_update_layout(list);
+    const int32_t selected = view_model().tool_selection();
+    apply_tool_selection_style(binding, selected, false);
+    if (selected >= 0 && selected < tool_count) {
+        lv_obj_scroll_to_view(binding->rows[selected], LV_ANIM_OFF);
+    }
     if (clock_label_ && uptime_label_) {
         refresh_timer_ = lv_timer_create(refresh_tool_values_cb, 1000, this);
         if (!refresh_timer_) {

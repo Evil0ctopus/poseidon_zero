@@ -2,16 +2,16 @@
   <picture>
     <source
       media="(prefers-color-scheme: dark)"
-      srcset="./screenshot/app-simulator-dark-darwin.png"
+      srcset="./screenshot/poseidon-zero-dark-320x170.png"
     />
     <source
       media="(prefers-color-scheme: light)"
-      srcset="./screenshot/app-simulator-light-darwin.png"
+      srcset="./screenshot/poseidon-zero-light-320x170.png"
     />
   <img
-    src="./screenshot/app-simulator-light-darwin.png"
-    alt="CardputerZero Template running in the desktop simulator"
-    width="315"
+    src="./screenshot/poseidon-zero-light-320x170.png"
+    alt="POSEIDON-Zero home dashboard in light and dark themes"
+    width="320"
   />
   </picture>
 </p>
@@ -54,8 +54,21 @@ In this example project, we used small MVVM-style structure around LVGL:
 
 Current demo UI:
 
-- Page 1: POSEIDON authorized operations launcher.
-- Page 2: Counter page, increment/decrement actions, simple page navigation.
+- Home: category launcher for system status, network status, wireless status, infrared,
+  expansion, tools, and media.
+- Category pages: keyboard-navigable, scrollable tool lists with status feedback for
+  unavailable hardware features and visibly marked `[OFF]` parity placeholders.
+- System page: live device status, the saved theme picker, and display-brightness controls when
+  the Linux backlight interface is available. The desktop simulator reports brightness control
+  as unsupported.
+- Theme: the navigation-bar moon/sun action quickly switches between light and dark palettes;
+  **System → Themes** or **Tools → Themes** previews and saves all 11 POSEIDON-ADV palettes plus
+  Zero Light.
+
+On tool pages, use `UP`/`DOWN` or `Z`/`C` to move through the list, `ENTER` to activate an
+item, and `ESC` to return home. In **System → Display brightness**, `Z`/`LEFT` and `C`/`RIGHT`
+adjust brightness in 5% steps; `ENTER` or `ESC` finishes. The control is available only when
+exactly one readable and writable device is exposed under `/sys/class/backlight`.
 
 ## Repository Layout
 
@@ -123,12 +136,16 @@ Theme startup behavior is configured in `config/poseidon-zero.conf`:
 
 ```ini
 [application]
-dark_mode=yes
+theme_id=11
 ```
 
-Set `dark_mode` to `yes` or `no`. The parser also accepts `true`/`false` and `1`/`0`.
+`theme_id` ranges from `0` to `11`: POSEIDON, MATRIX, E-INK, SYNTHWAVE, PHANTOM, BLOOD,
+AMBER CRT, NIGHT CITY, SOLARIS, NORDIC FROST, GHOST PURPLE, and ZERO LIGHT. Existing configs
+without `theme_id` continue to use `dark_mode` (`yes`/`no`, `true`/`false`, or `1`/`0`) as a
+compatibility fallback. The **Tools → Themes** picker previews palettes without saving until
+`ENTER`; `ESC` restores the previous palette.
 Installed device builds use `/etc/poseidon-zero.conf` as the system default. Changing the theme
-from the navigation bar (keyboard shortcut `6`) writes a per-user override to
+from the navigation bar (keyboard shortcut `6`) or saving in the theme picker writes a per-user override to
 `$XDG_CONFIG_HOME/poseidon-zero/poseidon-zero.conf`, or `~/.config/poseidon-zero/poseidon-zero.conf`
 when `XDG_CONFIG_HOME` is not set. The per-user file takes precedence on the next launch.
 
@@ -421,11 +438,12 @@ The first page bottom nav bar maps hardware/keyboard keys from left to right:
 | `8` | Fifth icon button |
 | `ESC` | First icon button / quit |
 
-On the home menu, `Up`/`F` and `Down`/`X` move between rows; `Left` and `Right` select
-within a row. Click a category to select it, then press `ENTER` to open it.
+The home menu is a swipeable tab carousel. Swipe left/right or use `Left`/`Right` (also
+`Z`/`C`) to browse categories; `Up`/`Down` (`F`/`X`) also move between tabs. Tap **OPEN**
+or press `ENTER` to open the selected category.
 
-Category pages show all eight entries in a two-column grid. Use `Up`/`F` and `Down`/`X` to
-move by rows, `Left` and `Right` to move by columns, and `ENTER` to run the selected tool.
+Category pages use keyboard-navigable lists. The Tools page scrolls to the selected entry as you
+move; use `UP`/`DOWN` or `Z`/`C`, then press `ENTER` to activate it.
 
 The counter page uses direct keyboard shortcuts:
 
@@ -448,13 +466,22 @@ prefix Morse code with `/` to decode it (for example, `/... --- ...`). Press `EN
 `BACKSPACE` to edit, or `ESC` to cancel.
 
 **Tools** also includes a start/stop stopwatch (`BACKSPACE` resets it), local interface MAC
-addresses, and a sanitized support report saved in the home folder. **System** exposes memory,
-Wi-Fi, Bluetooth, Ethernet, storage, battery, clock, and support-report actions. **Network**
-shows local interface and gateway status, allows one manually entered ping or DNS lookup in the
-background, and can display the local ARP table. Port scanning and host discovery are not
-provided. **Wireless** exposes local Wi-Fi, signal, and Bluetooth status; device discovery,
-GATT writes, and transmission features require separate hardware/authorization work and are
-not enabled.
+addresses, and an **Identity / connection** check for the current Zero account, hostname, Wi-Fi,
+Ethernet, and gateway; it runs locally and does not issue commands to a USB-connected computer.
+**Flashlight** displays a full-white screen until a key is pressed. **Dice / 8-ball** switches
+between dice, coin, and 8-ball with `UP`/`DOWN` (or `M`), rolls with `ENTER`, and exits with `ESC`.
+**Screen test** cycles through solid display colors with any key and exits with `ESC`.
+**Themes** previews the full palette list with `UP`/`DOWN`; press `ENTER` to save or `ESC` to
+restore the prior theme. Ambient preview, alternate layout, screensaver, and sound settings remain
+visible as `[OFF]` entries because those Zero implementations are not available.
+**Network → Diagnostics** saves a sanitized support report in the home folder. **System** exposes
+memory, Wi-Fi, Bluetooth, Ethernet, storage, battery, clock, and
+brightness. **Network** shows local interface and gateway status, allows one manually entered ping
+or DNS lookup in the background, and can display the local ARP table. Port scanning and host
+discovery are not provided. **Wireless** exposes local Wi-Fi, signal, and Bluetooth status;
+additional ADV parity
+slots are shown as `[OFF]` placeholders. Selecting one only reports that it is unavailable; no
+scan, transmission, credential capture, input injection, or device-control action is performed.
 
 ### Adding a Screen
 

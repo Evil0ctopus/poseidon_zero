@@ -653,4 +653,15 @@ if(USE_DESKTOP AND BUILD_TESTING)
             "${CMAKE_CURRENT_SOURCE_DIR}/src/model"
     )
     add_test(NAME model-navigation COMMAND poseidon_model_navigation_tests)
+
+    add_executable(poseidon_application_config_tests
+        tests/application_config_test.cpp
+        src/app/application_config.cpp
+    )
+    target_include_directories(poseidon_application_config_tests
+        PRIVATE
+            "${CMAKE_CURRENT_SOURCE_DIR}/src/app"
+            "${CMAKE_CURRENT_SOURCE_DIR}/src/model"
+    )
+    add_test(NAME application-config COMMAND poseidon_application_config_tests)
 endif()
