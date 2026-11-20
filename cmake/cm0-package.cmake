@@ -78,6 +78,10 @@ install(FILES "${CMAKE_CURRENT_SOURCE_DIR}/assets/fonts/LICENSE.txt"
     DESTINATION "${CMAKE_INSTALL_DOCDIR}"
     RENAME "third-party-assets-license.txt"
 )
+install(FILES "${miniaudio_SOURCE_DIR}/LICENSE"
+    DESTINATION "${CMAKE_INSTALL_DOCDIR}"
+    RENAME "miniaudio-license.txt"
+)
 
 set(CPACK_GENERATOR "DEB")
 set(CPACK_PACKAGING_INSTALL_PREFIX "/usr")

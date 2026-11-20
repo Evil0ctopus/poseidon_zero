@@ -32,6 +32,7 @@ public:
     lv_subject_t* quit_requested_subject();
     lv_subject_t* menu_selection_subject();
     lv_subject_t* tool_selection_subject();
+    lv_subject_t* grid_layout_subject();
 
     bool is_dark_mode() const;
     void set_dark_mode(bool enabled);
@@ -40,6 +41,8 @@ public:
     void set_theme_id(model::ThemeId id);
     bool clock_24h() const;
     void set_clock_24h(bool enabled);
+    bool grid_layout() const;
+    void set_grid_layout(bool enabled);
 
     model::AppPage current_page() const;
     void show_apple_page();
@@ -78,6 +81,7 @@ private:
     reactive::BoolSubject quit_requested_subject_;
     reactive::IntSubject menu_selection_subject_;
     reactive::IntSubject tool_selection_subject_;
+    reactive::BoolSubject grid_layout_subject_;
 };
 
 } // namespace viewmodel

@@ -41,6 +41,25 @@ endif()
 
 
 include(FetchContent)
+find_package(Threads REQUIRED)
+
+FetchContent_Declare(
+    miniaudio
+    GIT_REPOSITORY https://github.com/mackron/miniaudio.git
+    GIT_TAG        0.11.21
+    GIT_SHALLOW    TRUE
+)
+FetchContent_GetProperties(miniaudio)
+if(NOT miniaudio_POPULATED)
+    if(POLICY CMP0169)
+        cmake_policy(PUSH)
+        cmake_policy(SET CMP0169 OLD)
+    endif()
+    FetchContent_Populate(miniaudio)
+    if(POLICY CMP0169)
+        cmake_policy(POP)
+    endif()
+endif()
 
 
 # lvgl - main ui framework
@@ -413,6 +432,8 @@ target_include_directories(${PROJECT_NAME}_platform
     PUBLIC
         ${LVGL_INCLUDE_DIR}
         "${CMAKE_CURRENT_SOURCE_DIR}/src/platform"
+    PRIVATE
+        "${miniaudio_SOURCE_DIR}"
 )
 
 target_compile_definitions(${PROJECT_NAME}_platform
@@ -426,7 +447,13 @@ target_compile_definitions(${PROJECT_NAME}_platform
 target_link_libraries(${PROJECT_NAME}_platform
     PUBLIC
         lvgl
+    PRIVATE
+        ${CMAKE_DL_LIBS}
+        Threads::Threads
 )
+if(UNIX)
+    target_link_libraries(${PROJECT_NAME}_platform PRIVATE m)
+endif()
 
 # ====================================================
 # Model sources
@@ -634,6 +661,23 @@ include(cmake/cm0-package.cmake)
 
 include(CTest)
 if(USE_DESKTOP AND BUILD_TESTING)
+    add_executable(poseidon_gallery_tests
+        tests/gallery_test.cpp
+        src/platform/gallery.cpp
+    )
+    target_include_directories(poseidon_gallery_tests PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/src/platform")
+    target_link_libraries(poseidon_gallery_tests PRIVATE PNG::PNG)
+    add_test(NAME gallery COMMAND poseidon_gallery_tests)
+
+    add_executable(poseidon_usb_keyboard_simulator_tests
+        tests/usb_keyboard_simulator_test.cpp
+        src/platform/usb_keyboard_simulator.cpp
+    )
+    target_include_directories(poseidon_usb_keyboard_simulator_tests
+        PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/src/platform"
+    )
+    add_test(NAME usb-keyboard-simulator COMMAND poseidon_usb_keyboard_simulator_tests)
+
     add_executable(poseidon_safe_tools_tests
         tests/safe_tools_test.cpp
         src/platform/safe_tools.cpp

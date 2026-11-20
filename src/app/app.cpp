@@ -21,10 +21,15 @@
 #include "storage_status.h"
 #include "base_viewmodel.h"
 #include "tool_status.h"
+#include "ui_sound.h"
+#include "usb_keyboard_simulator.h"
 #include "linux_network.h"
 #include "feature_catalog.h"
+#include "gallery.h"
 #include "theme.h"
 #include "toast.h"
+
+#include "src/misc/cache/instance/lv_image_cache.h"
 
 #include <algorithm>
 #include <chrono>
@@ -41,6 +46,7 @@
 #include <string>
 #include <system_error>
 #include <thread>
+#include <vector>
 
 #if USE_DESKTOP
 #include "desktop_simulator_frame.h"
@@ -156,25 +162,58 @@ public:
                        ThemePersistence& theme_persistence)
         : view_model_(view_model),
           theme_persistence_(theme_persistence),
+          ui_sound_(assets.resolve("audio/click.wav").string()),
           toast_(std::make_unique<view::widgets::Toast>(lv_layer_top(), view_model, assets)),
           help_popup_(std::make_unique<view::widgets::HelpPopup>(lv_layer_top(), view_model, assets)) {
         toast_->build();
         help_popup_->build();
         platform::set_global_key_listener(global_key_listener, this);
         platform::set_key_release_listener(key_release_listener, this);
+        for (auto* input = lv_indev_get_next(nullptr); input; input = lv_indev_get_next(input)) {
+            if (lv_indev_get_type(input) == LV_INDEV_TYPE_POINTER) {
+                lv_indev_add_event_cb(input, pointer_sound_listener, LV_EVENT_PRESSED, this);
+            }
+        }
     }
 
     ~ShortcutController() {
         platform::clear_key_release_listener(key_release_listener, this);
         platform::clear_global_key_listener(global_key_listener, this);
+        for (auto* input = lv_indev_get_next(nullptr); input; input = lv_indev_get_next(input)) {
+            lv_indev_remove_event_cb_with_user_data(input, pointer_sound_listener, this);
+        }
         if (network_thread_.joinable()) {
             network_thread_.join();
+        }
+        if (gallery_thread_.joinable()) {
+            gallery_thread_.join();
         }
         close_visual_tool();
     }
 
     void update() {
         update_network_query();
+        update_gallery();
+        const auto sound_error = ui_sound_.take_error();
+        if (!sound_error.empty()) {
+            LOG_WARN("{}", sound_error);
+            toast_->show(sound_error, view::widgets::ToastTone::Error, 4200);
+        }
+        if (visual_tool_mode_ == VisualToolMode::Ambient ||
+            visual_tool_mode_ == VisualToolMode::ScreensaverAmbient) {
+            update_ambient_preview();
+        }
+        if (visual_tool_mode_ == VisualToolMode::ScreensaverClock) {
+            update_screensaver_clock();
+        }
+        if (theme_persistence_.config.screensaver_enabled &&
+            visual_tool_mode_ == VisualToolMode::None && !theme_picker_active_ &&
+            !screensaver_picker_active_ && !sound_picker_active_ && !usb_sim_active_ &&
+            !chance_tool_active_ && !brightness_adjustment_ &&
+            text_tool_mode_ == TextToolMode::None &&
+            lv_display_get_inactive_time(nullptr) >= 120000) {
+            start_screensaver();
+        }
     }
 
 private:
@@ -190,6 +229,10 @@ private:
         None,
         Flashlight,
         ScreenTest,
+        Ambient,
+        ScreensaverAmbient,
+        ScreensaverClock,
+        Gallery,
     };
 
     struct NetworkQueryState {
@@ -197,6 +240,14 @@ private:
         std::string host;
         std::string result;
         bool dns{false};
+        bool complete{false};
+    };
+
+    struct GalleryQueryState {
+        std::mutex mutex;
+        std::vector<std::filesystem::path> files;
+        platform::GalleryImage image;
+        std::string error;
         bool complete{false};
     };
 
@@ -718,10 +769,206 @@ private:
                          4200);
             return;
         }
+
         toast_->show(std::string("Clock format saved\n") +
                          (clock_24h ? "24-hour" : "12-hour"),
                      view::widgets::ToastTone::Success,
                      3200);
+    }
+
+    void toggle_layout() {
+        const bool grid = !view_model_.grid_layout();
+        view_model_.set_grid_layout(grid);
+        theme_persistence_.config.grid_layout = grid;
+        std::string error;
+        if (!save_application_config(theme_persistence_.config_path,
+                                     theme_persistence_.config, error)) {
+            LOG_WARN("failed to save layout {}: {}", theme_persistence_.config_path, error);
+            toast_->show("Layout changed but could not be saved",
+                         view::widgets::ToastTone::Error,
+                         4200);
+            return;
+        }
+        toast_->show(grid ? "Layout saved\nTwo-column grid" : "Layout saved\nList",
+                     view::widgets::ToastTone::Success,
+                     3200);
+    }
+
+    void toggle_screensaver() {
+        auto& config = theme_persistence_.config;
+        config.screensaver_enabled = !config.screensaver_enabled;
+        lv_display_trigger_activity(nullptr);
+        std::string error;
+        if (!save_application_config(theme_persistence_.config_path, config, error)) {
+            LOG_WARN("failed to save screensaver setting: {}", error);
+            toast_->show("Screensaver changed but could not be saved",
+                         view::widgets::ToastTone::Error, 4200);
+            return;
+        }
+        toast_->show(config.screensaver_enabled ? "Screensaver enabled\nStarts after 2 minutes"
+                                               : "Screensaver disabled",
+                     view::widgets::ToastTone::Success, 3200);
+    }
+
+    void show_screensaver_picker() {
+        toast_->show_persistent(std::string("Screensaver: ") +
+                                (screensaver_selection_ == 0 ? "Theme colors" : "Moving clock") +
+                                "\nArrows choose  ENTER save\nESC cancel");
+    }
+
+    void start_screensaver_picker() {
+        screensaver_selection_ = theme_persistence_.config.screensaver_style;
+        screensaver_picker_active_ = true;
+        show_screensaver_picker();
+    }
+
+    bool handle_screensaver_picker_key(uint32_t key, bool long_pressed) {
+        if (long_pressed) return true;
+        if (key == LV_KEY_ESC) {
+            screensaver_picker_active_ = false;
+            toast_->hide();
+        } else if (key == LV_KEY_UP || key == LV_KEY_DOWN ||
+                   key == LV_KEY_LEFT || key == LV_KEY_RIGHT ||
+                   key == 'f' || key == 'x' || key == 'z' || key == 'c') {
+            screensaver_selection_ = 1 - screensaver_selection_;
+            show_screensaver_picker();
+        } else if (key == LV_KEY_ENTER) {
+            screensaver_picker_active_ = false;
+            theme_persistence_.config.screensaver_style = screensaver_selection_;
+            std::string error;
+            if (!save_application_config(theme_persistence_.config_path,
+                                         theme_persistence_.config, error)) {
+                LOG_WARN("failed to save screensaver style: {}", error);
+                toast_->show("Screensaver selected but could not be saved",
+                             view::widgets::ToastTone::Error, 4200);
+            } else {
+                toast_->show("Screensaver style saved",
+                             view::widgets::ToastTone::Success, 3200);
+            }
+        }
+        return true;
+    }
+
+    void show_sound_picker() {
+        toast_->show_persistent(std::string("UI sounds: ") +
+                                (sound_selection_enabled_ ? "ON" : "MUTED") +
+                                "  " + std::to_string(sound_selection_volume_) + "%" +
+                                "\nArrows volume  M mute\nENTER save  ESC cancel");
+    }
+
+    void start_sound_picker() {
+        sound_selection_enabled_ = theme_persistence_.config.sound_enabled;
+        sound_selection_volume_ = theme_persistence_.config.sound_volume;
+        sound_picker_active_ = true;
+        show_sound_picker();
+    }
+
+    bool handle_sound_picker_key(uint32_t key, bool long_pressed) {
+        if (long_pressed) return true;
+        if (key == LV_KEY_ESC) {
+            sound_picker_active_ = false;
+            toast_->hide();
+        } else if (key == 'm' || key == 'M') {
+            sound_selection_enabled_ = !sound_selection_enabled_;
+            show_sound_picker();
+        } else if (key == LV_KEY_UP || key == LV_KEY_RIGHT || key == 'f' || key == 'c') {
+            sound_selection_volume_ = std::min(100, sound_selection_volume_ + 10);
+            show_sound_picker();
+        } else if (key == LV_KEY_DOWN || key == LV_KEY_LEFT || key == 'x' || key == 'z') {
+            sound_selection_volume_ = std::max(0, sound_selection_volume_ - 10);
+            show_sound_picker();
+        } else if (key == LV_KEY_ENTER) {
+            sound_picker_active_ = false;
+            auto& config = theme_persistence_.config;
+            config.sound_enabled = sound_selection_enabled_;
+            config.sound_volume = sound_selection_volume_;
+            std::string error;
+            if (!save_application_config(theme_persistence_.config_path, config, error)) {
+                LOG_WARN("failed to save sound settings: {}", error);
+                toast_->show("Sound settings changed but could not be saved",
+                             view::widgets::ToastTone::Error, 4200);
+            } else {
+                toast_->show("Sound settings saved", view::widgets::ToastTone::Success, 3200);
+            }
+            if (config.sound_enabled) {
+                ui_sound_.retry();
+            }
+            ui_sound_.play(config.sound_enabled ? config.sound_volume : 0);
+        }
+        return true;
+    }
+
+    void show_usb_sim_prompt(const std::string& notice = {}) {
+        std::string text = notice.empty() ? "" : notice + "\n";
+        if (!usb_sim_connected_) {
+            text += "USB KEYBOARD SIMULATION\nENTER connect  ESC cancel\nNo real host is connected";
+        } else if (usb_sim_confirm_) {
+            text += "SIMULATED SEND " + std::to_string(usb_sim_text_.size()) +
+                    " chars?\nENTER confirm  ESC edit\nNo real input will be sent";
+        } else {
+            text += "SIMULATED keyboard\n" + usb_sim_text_ +
+                    "\nENTER review  ESC disconnect";
+        }
+        toast_->show_persistent(text);
+    }
+
+    bool handle_usb_sim_key(uint32_t key, bool long_pressed) {
+        if (long_pressed) return true;
+        if (key == LV_KEY_ESC) {
+            if (usb_sim_confirm_) {
+                usb_sim_confirm_ = false;
+                show_usb_sim_prompt();
+            } else {
+                usb_sim_active_ = false;
+                usb_sim_connected_ = false;
+                usb_sim_text_.clear();
+                toast_->hide();
+            }
+            return true;
+        }
+        if (key == LV_KEY_ENTER) {
+            if (!usb_sim_connected_) {
+                usb_sim_connected_ = true;
+                show_usb_sim_prompt("SIMULATED connection");
+            } else if (!usb_sim_confirm_) {
+                std::vector<platform::KeyboardReport> reports;
+                std::string error;
+                if (platform::make_simulated_keyboard_reports(usb_sim_text_, reports, error)) {
+                    usb_sim_confirm_ = true;
+                    show_usb_sim_prompt();
+                } else {
+                    show_usb_sim_prompt(error);
+                }
+            } else {
+                std::vector<platform::KeyboardReport> reports;
+                std::string error;
+                if (!platform::make_simulated_keyboard_reports(usb_sim_text_, reports, error)) {
+                    usb_sim_confirm_ = false;
+                    show_usb_sim_prompt(error);
+                } else {
+                    usb_sim_text_.clear();
+                    usb_sim_confirm_ = false;
+                    show_usb_sim_prompt("SIMULATED " + std::to_string(reports.size()) +
+                                        " reports; no input sent");
+                }
+            }
+            return true;
+        }
+        if (!usb_sim_connected_ || usb_sim_confirm_) return true;
+        if (key == LV_KEY_BACKSPACE || key == LV_KEY_DEL) {
+            if (!usb_sim_text_.empty()) usb_sim_text_.pop_back();
+        } else if (key >= 32 && key <= 126) {
+            if (usb_sim_text_.size() == 64) {
+                show_usb_sim_prompt("Input limit reached");
+                return true;
+            }
+            usb_sim_text_.push_back(static_cast<char>(key));
+        } else {
+            show_usb_sim_prompt("Unsupported key");
+            return true;
+        }
+        show_usb_sim_prompt();
+        return true;
     }
 
     void show_network_interfaces() {
@@ -940,7 +1187,129 @@ private:
         }
         overlay_ = nullptr;
         screen_test_label_ = nullptr;
+        if (gallery_widget_) {
+            lv_image_cache_drop(&gallery_descriptor_);
+        }
+        gallery_widget_ = nullptr;
+        gallery_image_ = {};
         visual_tool_mode_ = VisualToolMode::None;
+    }
+
+    void start_gallery_load(bool scan) {
+        auto state = std::make_shared<GalleryQueryState>();
+        gallery_query_ = state;
+        const auto directory = gallery_directory_;
+        const auto files = gallery_files_;
+        const auto index = gallery_index_;
+        lv_label_set_text(screen_test_label_, "Loading PNG...\nESC back");
+        gallery_thread_ = std::thread([state, directory, files, index, scan] {
+            std::vector<std::filesystem::path> result_files = files;
+            platform::GalleryImage image;
+            std::string error;
+            const bool listed = !scan || platform::list_gallery_images(directory, result_files, error);
+            if (listed && result_files.empty()) {
+                error = "No PNG screenshots found";
+            } else if (listed) {
+                platform::load_gallery_image(result_files[index], image, error);
+            }
+            std::lock_guard<std::mutex> lock(state->mutex);
+            state->files = std::move(result_files);
+            state->image = std::move(image);
+            state->error = std::move(error);
+            state->complete = true;
+        });
+    }
+
+    void start_gallery() {
+        if (gallery_thread_.joinable()) {
+            toast_->show("Previous gallery request is still finishing",
+                         view::widgets::ToastTone::Warning, 3200);
+            return;
+        }
+        const char* home = std::getenv("HOME");
+        if (!home || !home[0]) {
+            toast_->show("Gallery needs a home directory",
+                         view::widgets::ToastTone::Error, 3200);
+            return;
+        }
+        gallery_directory_ = std::filesystem::path(home) / "Pictures" / "Screenshots";
+        gallery_files_.clear();
+        gallery_index_ = 0;
+        visual_tool_mode_ = VisualToolMode::Gallery;
+        if (!create_visual_overlay()) {
+            visual_tool_mode_ = VisualToolMode::None;
+            toast_->show("Gallery could not open", view::widgets::ToastTone::Error, 3200);
+            return;
+        }
+        lv_obj_set_style_bg_color(overlay_, lv_color_black(), 0);
+        lv_obj_set_style_text_color(screen_test_label_, lv_color_white(), 0);
+        lv_obj_set_width(screen_test_label_, 310);
+        lv_obj_set_style_text_align(screen_test_label_, LV_TEXT_ALIGN_CENTER, 0);
+        lv_obj_align(screen_test_label_, LV_ALIGN_BOTTOM_MID, 0, -2);
+        start_gallery_load(true);
+    }
+
+    void update_gallery() {
+        if (!gallery_query_) return;
+        {
+            std::lock_guard<std::mutex> lock(gallery_query_->mutex);
+            if (!gallery_query_->complete) return;
+        }
+        gallery_thread_.join();
+        auto state = std::move(gallery_query_);
+        if (visual_tool_mode_ != VisualToolMode::Gallery) return;
+        gallery_files_ = std::move(state->files);
+        if (gallery_widget_) {
+            lv_obj_delete(gallery_widget_);
+            lv_image_cache_drop(&gallery_descriptor_);
+            gallery_widget_ = nullptr;
+        }
+        gallery_image_ = std::move(state->image);
+        if (!state->error.empty()) {
+            lv_label_set_text(screen_test_label_,
+                              (state->error + "\nArrows browse  ESC back").c_str());
+            return;
+        }
+        gallery_descriptor_ = {};
+        gallery_descriptor_.header.magic = LV_IMAGE_HEADER_MAGIC;
+        gallery_descriptor_.header.cf = LV_COLOR_FORMAT_ARGB8888;
+        gallery_descriptor_.header.w = gallery_image_.width;
+        gallery_descriptor_.header.h = gallery_image_.height;
+        gallery_descriptor_.header.stride = gallery_image_.width * 4;
+        gallery_descriptor_.data_size = gallery_image_.bgra.size();
+        gallery_descriptor_.data = gallery_image_.bgra.data();
+        gallery_widget_ = lv_image_create(overlay_);
+        lv_image_set_src(gallery_widget_, &gallery_descriptor_);
+        lv_obj_align(gallery_widget_, LV_ALIGN_TOP_MID, 0, 0);
+        lv_obj_move_foreground(screen_test_label_);
+        const std::string caption = std::to_string(gallery_index_ + 1) + "/" +
+                                    std::to_string(gallery_files_.size()) +
+                                    "  LEFT/RIGHT  ESC";
+        lv_label_set_text(screen_test_label_, caption.c_str());
+    }
+
+    bool handle_gallery_key(uint32_t key, bool long_pressed) {
+        if (long_pressed) return true;
+        if (key == LV_KEY_ESC) {
+            close_visual_tool();
+            return true;
+        }
+        if (gallery_thread_.joinable() || gallery_files_.empty()) return true;
+        if (key == LV_KEY_LEFT || key == 'z') {
+            gallery_index_ = (gallery_index_ + gallery_files_.size() - 1) % gallery_files_.size();
+        } else if (key == LV_KEY_RIGHT || key == 'c') {
+            gallery_index_ = (gallery_index_ + 1) % gallery_files_.size();
+        } else {
+            return true;
+        }
+        if (gallery_widget_) {
+            lv_obj_delete(gallery_widget_);
+            lv_image_cache_drop(&gallery_descriptor_);
+            gallery_widget_ = nullptr;
+            gallery_image_ = {};
+        }
+        start_gallery_load(false);
+        return true;
     }
 
     void start_flashlight() {
@@ -955,6 +1324,79 @@ private:
         lv_obj_set_style_bg_color(overlay_, lv_color_white(), 0);
         lv_label_set_text(screen_test_label_, "FLASHLIGHT\nPress any key to exit");
         lv_obj_set_style_text_color(screen_test_label_, lv_color_black(), 0);
+    }
+
+    void update_ambient_preview() {
+        const auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(
+            std::chrono::steady_clock::now() - ambient_started_).count();
+        const int phase = static_cast<int>((elapsed / 25) % 200);
+        const int brightness = phase <= 100 ? phase : 200 - phase;
+        const auto colors = view::palette(view_model_.theme_id());
+        lv_obj_set_style_bg_color(
+            overlay_, lv_color_mix(colors.primary, colors.background,
+                                   static_cast<uint8_t>(brightness * 128 / 100)), 0);
+    }
+
+    void start_ambient_preview() {
+        visual_tool_mode_ = VisualToolMode::Ambient;
+        if (!create_visual_overlay()) {
+            visual_tool_mode_ = VisualToolMode::None;
+            toast_->show("Ambient preview could not open",
+                         view::widgets::ToastTone::Error,
+                         3200);
+            return;
+        }
+        ambient_started_ = std::chrono::steady_clock::now();
+        lv_label_set_text(screen_test_label_, "AMBIENT\nPress any key to exit");
+        lv_obj_set_style_text_color(screen_test_label_,
+                                    view::palette(view_model_.theme_id()).text, 0);
+        update_ambient_preview();
+    }
+
+    void update_screensaver_clock() {
+        const auto elapsed = std::chrono::duration_cast<std::chrono::seconds>(
+            std::chrono::steady_clock::now() - ambient_started_).count();
+        if (elapsed == screensaver_clock_second_) return;
+        screensaver_clock_second_ = elapsed;
+        const std::string clock = platform::current_clock_text(view_model_.clock_24h());
+        lv_label_set_text(screen_test_label_, clock.empty() ? "Clock unavailable" : clock.c_str());
+        const int x = static_cast<int>((elapsed / 3) % 3) - 1;
+        const int y = static_cast<int>((elapsed / 9) % 3) - 1;
+        lv_obj_align(screen_test_label_, LV_ALIGN_CENTER, x * 90, y * 50);
+    }
+
+    static void screensaver_pressed(lv_event_t* event) {
+        auto* controller = static_cast<ShortcutController*>(lv_event_get_user_data(event));
+        if (controller) {
+            controller->close_visual_tool();
+            lv_display_trigger_activity(nullptr);
+        }
+    }
+
+    void start_screensaver() {
+        visual_tool_mode_ = theme_persistence_.config.screensaver_style == 0
+                                ? VisualToolMode::ScreensaverAmbient
+                                : VisualToolMode::ScreensaverClock;
+        if (!create_visual_overlay()) {
+            visual_tool_mode_ = VisualToolMode::None;
+            lv_display_trigger_activity(nullptr);
+            toast_->show("Screensaver could not open",
+                         view::widgets::ToastTone::Error, 3200);
+            return;
+        }
+        ambient_started_ = std::chrono::steady_clock::now();
+        screensaver_clock_second_ = -1;
+        lv_obj_add_flag(overlay_, LV_OBJ_FLAG_CLICKABLE);
+        lv_obj_add_event_cb(overlay_, screensaver_pressed, LV_EVENT_PRESSED, this);
+        const auto colors = view::palette(view_model_.theme_id());
+        lv_obj_set_style_bg_color(overlay_, colors.background, 0);
+        lv_obj_set_style_text_color(screen_test_label_, colors.text, 0);
+        if (visual_tool_mode_ == VisualToolMode::ScreensaverAmbient) {
+            lv_label_set_text(screen_test_label_, "");
+            update_ambient_preview();
+        } else {
+            update_screensaver_clock();
+        }
     }
 
     void update_screen_test() {
@@ -997,11 +1439,15 @@ private:
     }
 
     bool handle_visual_tool_key(uint32_t key, bool long_pressed) {
+        if (visual_tool_mode_ == VisualToolMode::Gallery) {
+            return handle_gallery_key(key, long_pressed);
+        }
         if (long_pressed) {
             return true;
         }
-        if (visual_tool_mode_ == VisualToolMode::Flashlight || key == LV_KEY_ESC) {
+        if (visual_tool_mode_ != VisualToolMode::ScreenTest || key == LV_KEY_ESC) {
             close_visual_tool();
+            lv_display_trigger_activity(nullptr);
             return true;
         }
         screen_test_index_ = (screen_test_index_ + 1) % 7;
@@ -1129,6 +1575,15 @@ private:
     }
 
     bool handle_key(uint32_t key, bool long_pressed) {
+        if (usb_sim_active_) {
+            return handle_usb_sim_key(key, long_pressed);
+        }
+        if (sound_picker_active_) {
+            return handle_sound_picker_key(key, long_pressed);
+        }
+        if (screensaver_picker_active_) {
+            return handle_screensaver_picker_key(key, long_pressed);
+        }
         if (theme_picker_active_) {
             return handle_theme_picker_key(key, long_pressed);
         }
@@ -1197,20 +1652,36 @@ private:
         if (view_model_.current_page() != model::AppPage::Apple) {
             if (key == LV_KEY_UP || key == 'f') {
                 if (!long_pressed) {
-                    view_model_.move_tool_selection(-1);
+                    if (!view_model_.grid_layout() || view_model_.tool_selection() >= 2) {
+                        view_model_.move_tool_selection(view_model_.grid_layout() ? -2 : -1);
+                    }
                 }
                 return true;
             }
             if (key == LV_KEY_DOWN || key == 'x') {
                 if (!long_pressed) {
-                    view_model_.move_tool_selection(1);
+                    const int32_t selection = view_model_.tool_selection();
+                    const int32_t count =
+                        view_model_.current_page() == model::AppPage::Tools
+                            ? model::kToolsPageItemCount
+                            : view_model_.current_page() == model::AppPage::Butter
+                                  ? model::kSystemToolItemCount
+                                  : model::kStandardToolItemCount;
+                    if (!view_model_.grid_layout() || selection + 2 < count) {
+                        view_model_.move_tool_selection(view_model_.grid_layout() ? 2 : 1);
+                    }
                 }
                 return true;
             }
             if (key == LV_KEY_LEFT || key == LV_KEY_RIGHT || key == 'z' || key == 'c') {
                 if (!long_pressed) {
-                    view_model_.move_tool_selection(
-                        key == LV_KEY_LEFT || key == 'z' ? -1 : 1);
+                    const int32_t delta = key == LV_KEY_LEFT || key == 'z' ? -1 : 1;
+                    const int32_t selection = view_model_.tool_selection();
+                    if (!view_model_.grid_layout() ||
+                        (delta < 0 && selection % 2 == 1) ||
+                        (delta > 0 && selection % 2 == 0)) {
+                        view_model_.move_tool_selection(delta);
+                    }
                 }
                 return true;
             }
@@ -1269,12 +1740,19 @@ private:
                                 start_theme_picker();
                                 break;
                             case 12:
+                                start_ambient_preview();
+                                break;
                             case 13:
+                                toggle_layout();
+                                break;
                             case 14:
+                                toggle_screensaver();
+                                break;
                             case 15:
+                                start_screensaver_picker();
+                                break;
                             case 16:
-                                show_feature_status(platform::tools_features(),
-                                                   view_model_.tool_selection());
+                                start_sound_picker();
                                 break;
                             default:
                                 break;
@@ -1354,11 +1832,32 @@ private:
                         return true;
                     }
                     if (view_model_.current_page() == model::AppPage::Expansion) {
+#if USE_DESKTOP
+                        if (view_model_.tool_selection() == 7) {
+                            usb_sim_active_ = true;
+                            usb_sim_connected_ = false;
+                            usb_sim_confirm_ = false;
+                            usb_sim_text_.clear();
+                            show_usb_sim_prompt();
+                            return true;
+                        }
+#endif
                         show_feature_status(platform::expansion_features(),
                                             view_model_.tool_selection());
                         return true;
                     }
                     if (view_model_.current_page() == model::AppPage::Media) {
+                        if (view_model_.tool_selection() == 6) {
+                            ui_sound_.retry();
+                            ui_sound_.play(50);
+                            toast_->show("Speaker test requested\nListen for a click",
+                                         view::widgets::ToastTone::Default, 4200);
+                            return true;
+                        }
+                        if (view_model_.tool_selection() == 7) {
+                            start_gallery();
+                            return true;
+                        }
                         show_feature_status(platform::media_features(),
                                             view_model_.tool_selection());
                         return true;
@@ -1455,11 +1954,21 @@ private:
         exit_armed_ = false;
     }
 
+    static void pointer_sound_listener(lv_event_t* event) {
+        auto* controller = static_cast<ShortcutController*>(lv_event_get_user_data(event));
+        if (controller && controller->theme_persistence_.config.sound_enabled) {
+            controller->ui_sound_.play(controller->theme_persistence_.config.sound_volume);
+        }
+    }
+
     static bool global_key_listener(uint32_t key,
                                     const char*,
                                     bool long_pressed,
                                     void* user_data) {
         auto* controller = static_cast<ShortcutController*>(user_data);
+        if (controller && !long_pressed && controller->theme_persistence_.config.sound_enabled) {
+            controller->ui_sound_.play(controller->theme_persistence_.config.sound_volume);
+        }
         return controller && controller->handle_key(key, long_pressed);
     }
 
@@ -1472,12 +1981,21 @@ private:
 
     viewmodel::BaseViewModel& view_model_;
     ThemePersistence& theme_persistence_;
+    platform::UiSound ui_sound_;
     std::unique_ptr<view::widgets::Toast> toast_;
     std::unique_ptr<view::widgets::HelpPopup> help_popup_;
     std::string text_tool_buffer_;
     TextToolMode text_tool_mode_{TextToolMode::None};
     std::shared_ptr<NetworkQueryState> network_query_;
     std::thread network_thread_;
+    std::shared_ptr<GalleryQueryState> gallery_query_;
+    std::thread gallery_thread_;
+    std::filesystem::path gallery_directory_;
+    std::vector<std::filesystem::path> gallery_files_;
+    std::size_t gallery_index_{0};
+    platform::GalleryImage gallery_image_;
+    lv_image_dsc_t gallery_descriptor_{};
+    lv_obj_t* gallery_widget_{nullptr};
     std::chrono::steady_clock::time_point stopwatch_started_{};
     std::chrono::steady_clock::duration stopwatch_elapsed_{};
     bool stopwatch_running_{false};
@@ -1494,6 +2012,17 @@ private:
     lv_obj_t* overlay_{nullptr};
     lv_obj_t* screen_test_label_{nullptr};
     int32_t screen_test_index_{0};
+    std::chrono::steady_clock::time_point ambient_started_{};
+    int64_t screensaver_clock_second_{-1};
+    bool screensaver_picker_active_{false};
+    int32_t screensaver_selection_{0};
+    bool sound_picker_active_{false};
+    bool sound_selection_enabled_{false};
+    int32_t sound_selection_volume_{50};
+    bool usb_sim_active_{false};
+    bool usb_sim_connected_{false};
+    bool usb_sim_confirm_{false};
+    std::string usb_sim_text_;
     bool theme_picker_active_{false};
     int32_t theme_selection_{0};
     int32_t original_theme_selection_{0};
@@ -1565,6 +2094,7 @@ int Application::run() {
             view_model.set_dark_mode(config.dark_mode);
         }
         view_model.set_clock_24h(config.clock_24h);
+        view_model.set_grid_layout(config.grid_layout);
         LOG_INFO("loaded config: {} (theme={})",
                  loaded_config_path,
                  view::theme_name(view_model.theme_id()));

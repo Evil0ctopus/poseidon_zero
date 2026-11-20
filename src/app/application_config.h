@@ -16,6 +16,11 @@ struct ApplicationConfig {
     int32_t theme_id = 0;
     bool theme_id_set = false;
     bool clock_24h = true;
+    bool grid_layout = false;
+    bool screensaver_enabled = false;
+    int32_t screensaver_style = 0;
+    bool sound_enabled = false;
+    int32_t sound_volume = 50;
     bool large_text = false;
     bool reduced_motion = false;
 };

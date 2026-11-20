@@ -37,6 +37,11 @@ int main() {
     config.theme_id = 11;
     config.theme_id_set = true;
     config.clock_24h = false;
+    config.grid_layout = true;
+    config.screensaver_enabled = true;
+    config.screensaver_style = 1;
+    config.sound_enabled = true;
+    config.sound_volume = 70;
     config.large_text = true;
     config.reduced_motion = true;
 
@@ -50,6 +55,10 @@ int main() {
     if (!app::load_application_config(temporary.path.string(), loaded, error) ||
         !loaded.theme_id_set || loaded.theme_id != config.theme_id ||
         loaded.dark_mode != config.dark_mode || loaded.clock_24h != config.clock_24h ||
+        loaded.grid_layout != config.grid_layout ||
+        loaded.screensaver_enabled != config.screensaver_enabled ||
+        loaded.screensaver_style != config.screensaver_style ||
+        loaded.sound_enabled != config.sound_enabled || loaded.sound_volume != config.sound_volume ||
         loaded.large_text != config.large_text ||
         loaded.reduced_motion != config.reduced_motion) {
         std::cerr << "Saved application settings did not round-trip\n";
@@ -70,6 +79,35 @@ int main() {
         std::cerr << "Configs without clock_24h should default to 24-hour time\n";
         return 1;
     }
+    if (legacy.grid_layout) {
+        std::cerr << "Configs without grid_layout should default to list layout\n";
+        return 1;
+    }
+    if (legacy.screensaver_enabled || legacy.screensaver_style != 0) {
+        std::cerr << "Legacy configs should default to the disabled theme screensaver\n";
+        return 1;
+    }
+    if (legacy.sound_enabled || legacy.sound_volume != 50) {
+        std::cerr << "Legacy configs should default to muted UI sounds\n";
+        return 1;
+    }
+
+    {
+        std::ofstream output(temporary.path, std::ios::trunc);
+        output << "[application]\ndark_mode=no\n[other]\nvalue=keep\n";
+    }
+    if (!app::save_application_config(temporary.path.string(), config, error)) {
+        std::cerr << "Could not update existing config: " << error << '\n';
+        return 1;
+    }
+    app::ApplicationConfig updated;
+    if (!app::load_application_config(temporary.path.string(), updated, error) ||
+        !updated.grid_layout || !updated.screensaver_enabled ||
+        updated.screensaver_style != 1 || !updated.sound_enabled ||
+        updated.sound_volume != 70) {
+        std::cerr << "New settings must be saved inside the application section\n";
+        return 1;
+    }
 
     {
         std::ofstream output(temporary.path, std::ios::trunc);
@@ -86,6 +124,41 @@ int main() {
     }
     if (app::load_application_config(temporary.path.string(), loaded, error)) {
         std::cerr << "Invalid clock format settings should be rejected\n";
+        return 1;
+    }
+
+    {
+        std::ofstream output(temporary.path, std::ios::trunc);
+        output << "[application]\ngrid_layout=maybe\n";
+    }
+    if (app::load_application_config(temporary.path.string(), loaded, error)) {
+        std::cerr << "Invalid layout settings should be rejected\n";
+        return 1;
+    }
+
+    {
+        std::ofstream output(temporary.path, std::ios::trunc);
+        output << "[application]\nscreensaver_style=2\n";
+    }
+    if (app::load_application_config(temporary.path.string(), loaded, error)) {
+        std::cerr << "Invalid screensaver styles should be rejected\n";
+        return 1;
+    }
+    {
+        std::ofstream output(temporary.path, std::ios::trunc);
+        output << "[application]\nscreensaver_enabled=maybe\n";
+    }
+    if (app::load_application_config(temporary.path.string(), loaded, error)) {
+        std::cerr << "Invalid screensaver settings should be rejected\n";
+        return 1;
+    }
+
+    {
+        std::ofstream output(temporary.path, std::ios::trunc);
+        output << "[application]\nsound_volume=101\n";
+    }
+    if (app::load_application_config(temporary.path.string(), loaded, error)) {
+        std::cerr << "Out-of-range sound volume should be rejected\n";
         return 1;
     }
 

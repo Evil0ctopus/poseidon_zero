@@ -54,6 +54,8 @@ public:
     void set_theme_id(ThemeId id);
     bool clock_24h() const;
     void set_clock_24h(bool enabled);
+    bool grid_layout() const;
+    void set_grid_layout(bool enabled);
 
     AppPage current_page() const;
     void set_current_page(AppPage page);
@@ -69,6 +71,7 @@ public:
 private:
     ThemeId theme_id_ = ThemeId::ZeroLight;
     bool clock_24h_{true};
+    bool grid_layout_{false};
     AppPage current_page_ = AppPage::Apple;
     int32_t menu_selection_ = 0;
     int32_t tool_selection_ = 0;

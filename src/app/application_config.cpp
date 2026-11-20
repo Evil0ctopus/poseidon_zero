@@ -119,6 +119,46 @@ bool load_application_config(const std::string& path,
                 return false;
             }
         }
+        if (section == "application" && key == "grid_layout") {
+            if (!parse_bool(line.substr(separator + 1), config.grid_layout)) {
+                error = "invalid grid_layout value at line " + std::to_string(line_number);
+                return false;
+            }
+        }
+        if (section == "application" && key == "screensaver_enabled") {
+            if (!parse_bool(line.substr(separator + 1), config.screensaver_enabled)) {
+                error = "invalid screensaver_enabled value at line " + std::to_string(line_number);
+                return false;
+            }
+        }
+        if (section == "application" && key == "screensaver_style") {
+            const std::string value = trim(line.substr(separator + 1));
+            int32_t style = 0;
+            const auto parsed = std::from_chars(value.data(), value.data() + value.size(), style);
+            if (parsed.ec != std::errc{} || parsed.ptr != value.data() + value.size() ||
+                style < 0 || style > 1) {
+                error = "invalid screensaver_style value at line " + std::to_string(line_number);
+                return false;
+            }
+            config.screensaver_style = style;
+        }
+        if (section == "application" && key == "sound_enabled") {
+            if (!parse_bool(line.substr(separator + 1), config.sound_enabled)) {
+                error = "invalid sound_enabled value at line " + std::to_string(line_number);
+                return false;
+            }
+        }
+        if (section == "application" && key == "sound_volume") {
+            const std::string value = trim(line.substr(separator + 1));
+            int32_t volume = 0;
+            const auto parsed = std::from_chars(value.data(), value.data() + value.size(), volume);
+            if (parsed.ec != std::errc{} || parsed.ptr != value.data() + value.size() ||
+                volume < 0 || volume > 100) {
+                error = "invalid sound_volume value at line " + std::to_string(line_number);
+                return false;
+            }
+            config.sound_volume = volume;
+        }
         if (section == "application" && key == "large_text") {
             if (!parse_bool(line.substr(separator + 1), config.large_text)) {
                 error = "invalid large_text value at line " + std::to_string(line_number);
@@ -142,6 +182,15 @@ bool save_application_config(const std::string& path,
     error.clear();
     if (config.theme_id < 0 || config.theme_id >= model::kThemeCount) {
         error = "theme_id is outside the supported range";
+        return false;
+    }
+    if (config.screensaver_style < 0 || config.screensaver_style > 1) {
+        error = "screensaver_style is outside the supported range";
+        return false;
+    }
+
+    if (config.sound_volume < 0 || config.sound_volume > 100) {
+        error = "sound_volume is outside the supported range";
         return false;
     }
 
@@ -169,11 +218,23 @@ bool save_application_config(const std::string& path,
     bool wrote_dark_mode = false;
     bool wrote_theme_id = false;
     bool wrote_clock_24h = false;
+    bool wrote_grid_layout = false;
+    bool wrote_screensaver_enabled = false;
+    bool wrote_screensaver_style = false;
+    bool wrote_sound_enabled = false;
+    bool wrote_sound_volume = false;
     bool wrote_large_text = false;
     bool wrote_reduced_motion = false;
     const std::string dark_mode_line = config.dark_mode ? "dark_mode=yes" : "dark_mode=no";
     const std::string theme_id_line = "theme_id=" + std::to_string(config.theme_id);
     const std::string clock_24h_line = config.clock_24h ? "clock_24h=yes" : "clock_24h=no";
+    const std::string grid_layout_line = config.grid_layout ? "grid_layout=yes" : "grid_layout=no";
+    const std::string screensaver_enabled_line =
+        config.screensaver_enabled ? "screensaver_enabled=yes" : "screensaver_enabled=no";
+    const std::string screensaver_style_line =
+        "screensaver_style=" + std::to_string(config.screensaver_style);
+    const std::string sound_enabled_line = config.sound_enabled ? "sound_enabled=yes" : "sound_enabled=no";
+    const std::string sound_volume_line = "sound_volume=" + std::to_string(config.sound_volume);
     const std::string large_text_line = config.large_text ? "large_text=yes" : "large_text=no";
     const std::string reduced_motion_line =
         config.reduced_motion ? "reduced_motion=yes" : "reduced_motion=no";
@@ -194,6 +255,26 @@ bool save_application_config(const std::string& path,
             if (in_application_section && !wrote_clock_24h) {
                 updated.push_back(clock_24h_line);
                 wrote_clock_24h = true;
+            }
+            if (in_application_section && !wrote_grid_layout) {
+                updated.push_back(grid_layout_line);
+                wrote_grid_layout = true;
+            }
+            if (in_application_section && !wrote_screensaver_enabled) {
+                updated.push_back(screensaver_enabled_line);
+                wrote_screensaver_enabled = true;
+            }
+            if (in_application_section && !wrote_screensaver_style) {
+                updated.push_back(screensaver_style_line);
+                wrote_screensaver_style = true;
+            }
+            if (in_application_section && !wrote_sound_enabled) {
+                updated.push_back(sound_enabled_line);
+                wrote_sound_enabled = true;
+            }
+            if (in_application_section && !wrote_sound_volume) {
+                updated.push_back(sound_volume_line);
+                wrote_sound_volume = true;
             }
             if (in_application_section && !wrote_large_text) {
                 updated.push_back(large_text_line);
@@ -228,6 +309,41 @@ bool save_application_config(const std::string& path,
             }
             continue;
         }
+        if (in_application_section && is_key(current_line, "grid_layout")) {
+            if (!wrote_grid_layout) {
+                updated.push_back(grid_layout_line);
+                wrote_grid_layout = true;
+            }
+            continue;
+        }
+        if (in_application_section && is_key(current_line, "screensaver_enabled")) {
+            if (!wrote_screensaver_enabled) {
+                updated.push_back(screensaver_enabled_line);
+                wrote_screensaver_enabled = true;
+            }
+            continue;
+        }
+        if (in_application_section && is_key(current_line, "screensaver_style")) {
+            if (!wrote_screensaver_style) {
+                updated.push_back(screensaver_style_line);
+                wrote_screensaver_style = true;
+            }
+            continue;
+        }
+        if (in_application_section && is_key(current_line, "sound_enabled")) {
+            if (!wrote_sound_enabled) {
+                updated.push_back(sound_enabled_line);
+                wrote_sound_enabled = true;
+            }
+            continue;
+        }
+        if (in_application_section && is_key(current_line, "sound_volume")) {
+            if (!wrote_sound_volume) {
+                updated.push_back(sound_volume_line);
+                wrote_sound_volume = true;
+            }
+            continue;
+        }
         if (in_application_section && is_key(current_line, "large_text")) {
             if (!wrote_large_text) {
                 updated.push_back(large_text_line);
@@ -259,6 +375,21 @@ bool save_application_config(const std::string& path,
     }
     if (!wrote_clock_24h) {
         updated.push_back(clock_24h_line);
+    }
+    if (!wrote_grid_layout) {
+        updated.push_back(grid_layout_line);
+    }
+    if (!wrote_screensaver_enabled) {
+        updated.push_back(screensaver_enabled_line);
+    }
+    if (!wrote_screensaver_style) {
+        updated.push_back(screensaver_style_line);
+    }
+    if (!wrote_sound_enabled) {
+        updated.push_back(sound_enabled_line);
+    }
+    if (!wrote_sound_volume) {
+        updated.push_back(sound_volume_line);
     }
     if (!wrote_large_text) {
         updated.push_back(large_text_line);

@@ -47,6 +47,14 @@ void BaseModel::set_clock_24h(bool enabled) {
     clock_24h_ = enabled;
 }
 
+bool BaseModel::grid_layout() const {
+    return grid_layout_;
+}
+
+void BaseModel::set_grid_layout(bool enabled) {
+    grid_layout_ = enabled;
+}
+
 AppPage BaseModel::current_page() const {
     return current_page_;
 }

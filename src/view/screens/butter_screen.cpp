@@ -24,9 +24,29 @@ namespace {
 
 struct ToolSelectionBinding {
     lv_obj_t* rows[model::kToolsPageItemCount]{};
+    lv_obj_t* labels[model::kToolsPageItemCount]{};
+    lv_obj_t* list{nullptr};
     int32_t row_count{model::kStandardToolItemCount};
     viewmodel::BaseViewModel* view_model{nullptr};
 };
+
+void tool_layout_observer(lv_observer_t* observer, lv_subject_t* subject) {
+    auto* binding = static_cast<ToolSelectionBinding*>(lv_observer_get_user_data(observer));
+    if (!binding || !binding->list) {
+        return;
+    }
+    const bool grid = lv_subject_get_int(subject) != 0;
+    lv_obj_set_flex_flow(binding->list, grid ? LV_FLEX_FLOW_ROW_WRAP : LV_FLEX_FLOW_COLUMN);
+    for (int32_t index = 0; index < binding->row_count; ++index) {
+        lv_obj_set_width(binding->rows[index], grid ? 138 : 280);
+        lv_obj_set_width(binding->labels[index], grid ? 128 : 270);
+    }
+    lv_obj_update_layout(binding->list);
+    const int32_t selected = binding->view_model->tool_selection();
+    if (selected >= 0 && selected < binding->row_count) {
+        lv_obj_scroll_to_view(binding->rows[selected], LV_ANIM_OFF);
+    }
+}
 
 void cleanup_tool_selection(lv_event_t* event) {
     delete static_cast<ToolSelectionBinding*>(lv_event_get_user_data(event));
@@ -160,7 +180,7 @@ void ButterScreen::build_content(lv_obj_t* content) {
         for (int32_t index = 0; index < count; ++index) {
             std::snprintf(feature_label_storage[index],
                           sizeof(feature_label_storage[index]),
-                          features[index].available ? "%s" : "%s [OFF]",
+                          features[index].available ? "%s" : "[OFF] %s",
                           features[index].name);
             tools[index] = feature_label_storage[index];
         }
@@ -197,6 +217,9 @@ void ButterScreen::build_content(lv_obj_t* content) {
             {
                 const auto features = platform::expansion_features();
                 set_feature_labels(features, tool_count);
+#if USE_DESKTOP
+                tools[7] = "[SIM] USB keyboard";
+#endif
             }
             break;
         case model::AppPage::Tools:
@@ -324,8 +347,6 @@ void ButterScreen::build_content(lv_obj_t* content) {
         tools[0] = wifi.present ? "Wi-Fi  available" : "Wi-Fi  unavailable";
         tools[1] = wifi.present ? "Signal  available" : "Signal  unavailable";
         tools[2] = bluetooth.present ? "Bluetooth  available" : "Bluetooth  unavailable";
-        tools[3] = "GATT";
-        tools[4] = "Tracker scan";
     }
     auto* list = lv_obj_create(content);
     lv_obj_remove_style_all(list);
@@ -334,6 +355,7 @@ void ButterScreen::build_content(lv_obj_t* content) {
     lv_obj_set_flex_align(list, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_START);
     lv_obj_set_style_pad_all(list, 3, 0);
     lv_obj_set_style_pad_row(list, 2, 0);
+    lv_obj_set_style_pad_column(list, 4, 0);
     lv_obj_set_scroll_dir(list, LV_DIR_VER);
     lv_obj_set_scrollbar_mode(list, LV_SCROLLBAR_MODE_AUTO);
     lv_obj_add_flag(list, LV_OBJ_FLAG_SCROLLABLE);
@@ -342,6 +364,7 @@ void ButterScreen::build_content(lv_obj_t* content) {
                          reactive::ThemeRole::Surface);
 
     lv_obj_t* row_objects[kMaxToolCount] = {};
+    lv_obj_t* row_labels[kMaxToolCount] = {};
     for (int32_t index = 0; index < tool_count; ++index) {
         auto* row = lv_button_create(list);
         row_objects[index] = row;
@@ -356,6 +379,7 @@ void ButterScreen::build_content(lv_obj_t* content) {
                              reactive::ThemeRole::Button);
 
         auto* label = lv_label_create(row);
+        row_labels[index] = label;
         lv_label_set_text(label, tools[index]);
         const lv_font_t* label_font =
             assets().load_standard_font(12, app::StandardFontWeight::Regular);
@@ -363,6 +387,7 @@ void ButterScreen::build_content(lv_obj_t* content) {
                                    label_font ? label_font : &lv_font_montserrat_12,
                                    0);
         lv_obj_set_width(label, 270);
+        lv_obj_set_height(label, 16);
         lv_label_set_long_mode(label, LV_LABEL_LONG_DOT);
         lv_obj_align(label, LV_ALIGN_LEFT_MID, 0, 0);
         reactive::bind_theme(label,
@@ -379,9 +404,11 @@ void ButterScreen::build_content(lv_obj_t* content) {
 
     auto* binding = new ToolSelectionBinding{};
     binding->view_model = &view_model();
+    binding->list = list;
     binding->row_count = tool_count;
     for (int32_t index = 0; index < tool_count; ++index) {
         binding->rows[index] = row_objects[index];
+        binding->labels[index] = row_labels[index];
         lv_obj_add_event_cb(row_objects[index], tool_row_clicked, LV_EVENT_CLICKED, binding);
     }
     lv_obj_add_event_cb(content, cleanup_tool_selection, LV_EVENT_DELETE, binding);
@@ -391,6 +418,10 @@ void ButterScreen::build_content(lv_obj_t* content) {
                                 binding);
     lv_subject_add_observer_obj(view_model().theme_id_subject(),
                                 tool_theme_observer,
+                                content,
+                                binding);
+    lv_subject_add_observer_obj(view_model().grid_layout_subject(),
+                                tool_layout_observer,
                                 content,
                                 binding);
     lv_obj_update_layout(list);

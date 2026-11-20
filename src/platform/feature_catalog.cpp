@@ -122,26 +122,11 @@ ToolFeatureList tools_features() {
         {"Dice / 8-ball", "Roll dice, flip a coin, or get a local random answer", FeatureRisk::Safe, true},
         {"Screen test", "Cycle local display colors", FeatureRisk::Safe, true},
         {"Themes", "Preview and choose a saved display palette", FeatureRisk::Safe, true},
-        {"Ambient preview",
-         "Disabled placeholder; ambient animation controls are not implemented",
-         FeatureRisk::Safe,
-         false},
-        {"Layout toggle",
-         "Disabled placeholder; alternate layouts are not implemented",
-         FeatureRisk::Safe,
-         false},
-        {"Screensaver toggle",
-         "Disabled placeholder; inactivity screensaver control is not implemented",
-         FeatureRisk::Safe,
-         false},
-        {"Screensaver picker",
-         "Disabled placeholder; no screensaver catalog is available",
-         FeatureRisk::Safe,
-         false},
-        {"Sound settings",
-         "Disabled placeholder; sound profiles and volume controls are not implemented",
-         FeatureRisk::Safe,
-         false},
+        {"Ambient preview", "Show an animated current-theme preview", FeatureRisk::Safe, true},
+        {"Layout toggle", "Switch between list and two-column grid", FeatureRisk::Safe, true},
+        {"Screensaver toggle", "Enable or disable the idle screensaver", FeatureRisk::Safe, true},
+        {"Screensaver picker", "Choose theme colors or a moving clock", FeatureRisk::Safe, true},
+        {"Sound settings", "Mute UI sounds or adjust their volume", FeatureRisk::Safe, true},
     }};
 }
 
@@ -153,8 +138,8 @@ FeatureList media_features() {
         {"Piano", "Unavailable; no instrument workflow is configured", FeatureRisk::Safe, false},
         {"Album art", "Unavailable; no local music metadata workflow is configured", FeatureRisk::Safe, false},
         {"Microphone", "Unavailable; no audio capture workflow is configured", FeatureRisk::Safe, false},
-        {"Speaker", "Unavailable; no audio playback workflow is configured", FeatureRisk::Safe, false},
-        {"Gallery", "Unavailable; no image browsing workflow is configured", FeatureRisk::Safe, false},
+        {"Speaker", "Play a short speaker test sound", FeatureRisk::Safe, true},
+        {"Gallery", "Browse PNG screenshots in the home Pictures/Screenshots folder", FeatureRisk::Safe, true},
     }};
 }
 

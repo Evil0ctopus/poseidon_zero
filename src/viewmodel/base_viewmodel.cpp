@@ -26,7 +26,8 @@ BaseViewModel::BaseViewModel()
       info_visible_subject_(false),
       quit_requested_subject_(false),
       menu_selection_subject_(0),
-      tool_selection_subject_(0) {}
+      tool_selection_subject_(0),
+      grid_layout_subject_(model_.grid_layout()) {}
 
 BaseViewModel::~BaseViewModel() = default;
 
@@ -74,6 +75,10 @@ lv_subject_t* BaseViewModel::tool_selection_subject() {
     return tool_selection_subject_.native();
 }
 
+lv_subject_t* BaseViewModel::grid_layout_subject() {
+    return grid_layout_subject_.native();
+}
+
 bool BaseViewModel::is_dark_mode() const {
     return model_.dark_mode();
 }
@@ -106,6 +111,15 @@ bool BaseViewModel::clock_24h() const {
 
 void BaseViewModel::set_clock_24h(bool enabled) {
     model_.set_clock_24h(enabled);
+}
+
+bool BaseViewModel::grid_layout() const {
+    return model_.grid_layout();
+}
+
+void BaseViewModel::set_grid_layout(bool enabled) {
+    model_.set_grid_layout(enabled);
+    grid_layout_subject_.set(enabled);
 }
 
 model::AppPage BaseViewModel::current_page() const {
