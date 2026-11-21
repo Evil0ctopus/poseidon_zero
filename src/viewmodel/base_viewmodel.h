@@ -32,6 +32,7 @@ public:
     lv_subject_t* quit_requested_subject();
     lv_subject_t* menu_selection_subject();
     lv_subject_t* tool_selection_subject();
+    lv_subject_t* spacious_layout_subject();
     lv_subject_t* grid_layout_subject();
 
     bool is_dark_mode() const;
@@ -41,6 +42,13 @@ public:
     void set_theme_id(model::ThemeId id);
     bool clock_24h() const;
     void set_clock_24h(bool enabled);
+    bool spacious_layout() const;
+    void set_spacious_layout(bool enabled);
+    bool screensaver_enabled() const;
+    void set_screensaver_enabled(bool enabled);
+    int32_t screensaver_palette() const;
+    void set_screensaver_palette(int32_t palette);
+    bool screensaver_due(uint32_t inactive_ms) const;
     bool grid_layout() const;
     void set_grid_layout(bool enabled);
 
@@ -81,6 +89,7 @@ private:
     reactive::BoolSubject quit_requested_subject_;
     reactive::IntSubject menu_selection_subject_;
     reactive::IntSubject tool_selection_subject_;
+    reactive::BoolSubject spacious_layout_subject_;
     reactive::BoolSubject grid_layout_subject_;
 };
 

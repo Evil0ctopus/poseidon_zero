@@ -27,6 +27,7 @@ BaseViewModel::BaseViewModel()
       quit_requested_subject_(false),
       menu_selection_subject_(0),
       tool_selection_subject_(0),
+      spacious_layout_subject_(model_.spacious_layout()),
       grid_layout_subject_(model_.grid_layout()) {}
 
 BaseViewModel::~BaseViewModel() = default;
@@ -75,6 +76,10 @@ lv_subject_t* BaseViewModel::tool_selection_subject() {
     return tool_selection_subject_.native();
 }
 
+lv_subject_t* BaseViewModel::spacious_layout_subject() {
+    return spacious_layout_subject_.native();
+}
+
 lv_subject_t* BaseViewModel::grid_layout_subject() {
     return grid_layout_subject_.native();
 }
@@ -111,6 +116,35 @@ bool BaseViewModel::clock_24h() const {
 
 void BaseViewModel::set_clock_24h(bool enabled) {
     model_.set_clock_24h(enabled);
+}
+
+bool BaseViewModel::spacious_layout() const {
+    return model_.spacious_layout();
+}
+
+void BaseViewModel::set_spacious_layout(bool enabled) {
+    model_.set_spacious_layout(enabled);
+    spacious_layout_subject_.set(enabled);
+}
+
+bool BaseViewModel::screensaver_enabled() const {
+    return model_.screensaver_enabled();
+}
+
+void BaseViewModel::set_screensaver_enabled(bool enabled) {
+    model_.set_screensaver_enabled(enabled);
+}
+
+int32_t BaseViewModel::screensaver_palette() const {
+    return model_.screensaver_palette();
+}
+
+void BaseViewModel::set_screensaver_palette(int32_t palette) {
+    model_.set_screensaver_palette(palette);
+}
+
+bool BaseViewModel::screensaver_due(uint32_t inactive_ms) const {
+    return model_.screensaver_due(inactive_ms);
 }
 
 bool BaseViewModel::grid_layout() const {

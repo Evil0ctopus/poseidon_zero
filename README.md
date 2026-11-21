@@ -60,6 +60,10 @@ Current UI:
   expansion, tools, and media.
 - Category pages: keyboard-navigable, scrollable tool lists with status feedback for
   unavailable hardware features and visibly marked `[OFF]` parity placeholders.
+  - On the Windows simulator, Network → Interfaces reports the host's adapters, not the
+    CardputerZero's. Ethernet, gateway, and ARP table likewise show host data; these views do not
+    initiate a scan or connection. Use `UP`/`DOWN` to browse entries and `ESC` to close the view.
+    The ARP view shows at most 32 entries and marks a truncated list with `+`.
 - System page: live device status, a saved theme picker, and a 12/24-hour clock setting. Display
   brightness controls are available when the Linux backlight interface is supported; the desktop
   simulator reports brightness control as unsupported.
@@ -71,6 +75,21 @@ On tool pages, use `UP`/`DOWN` or `Z`/`C` to move through the list, `ENTER` to a
 item, and `ESC` to return home. In **System → Display brightness**, `Z`/`LEFT` and `C`/`RIGHT`
 adjust brightness in 5% steps; `ENTER` or `ESC` finishes. The control is available only when
 exactly one readable and writable device is exposed under `/sys/class/backlight`.
+**Tools → Layout toggle** switches all category lists between compact and larger, spacious rows;
+the choice is saved.
+
+**Media → Gallery** browses local directories and opens PNG and JPEG images with `ENTER`; `ESC` returns
+to the listing. Images are read on a background worker and limited to 8 MiB on disk and
+1024 × 1024 pixels. Unsupported or unreadable files show an error. JPEG EXIF orientation
+is not applied.
+
+**Wireless → GATT** scans for nearby Bluetooth Low Energy advertisements for eight seconds.
+Use `UP`/`DOWN` (or `Z`/`C`) to choose a device and `ENTER` to connect and list its services
+and characteristics; `ESC` cancels or goes back. Only select devices you are authorized to
+inspect. The browser does not pair, read or write characteristic values. It disconnects after
+collecting the service list if it initiated the connection. Bluetooth and BlueZ must be enabled;
+the desktop simulator cannot scan. A device must be advertising to appear in the scan. The list
+shows at most 40 devices and 128 services or characteristics.
 
 ## Repository Layout
 
@@ -460,6 +479,13 @@ The counter page uses direct keyboard shortcuts:
 | `Left` | Decrease the counter |
 | `Right` | Increase the counter |
 
+### Files
+
+**Tools → Files** browses local directories read-only, starting at the home directory. Use
+`UP`/`DOWN` (or `F`/`X`) to select an entry, `ENTER` to open a directory, `BACKSPACE` to go
+up, and `ESC` to exit or cancel a directory read. File sizes are shown when available. Use `P`/`N` to browse pages of
+64 entries; a `+` after the item number indicates another page.
+
 ### Calculator
 
 Open **Tools**, select **Calculator**, and press `ENTER`. Type an arithmetic expression using
@@ -478,21 +504,25 @@ Ethernet, and gateway; it runs locally and does not issue commands to a USB-conn
 **Flashlight** displays a full-white screen until a key is pressed. **Dice / 8-ball** switches
 between dice, coin, and 8-ball with `UP`/`DOWN` (or `M`), rolls with `ENTER`, and exits with `ESC`.
 **Screen test** cycles through solid display colors with any key and exits with `ESC`.
+**Ambient preview** shows slowly changing colors; use `LEFT`/`RIGHT` or `Z`/`C` to select
+Ocean, Sunset, or Forest, and `ESC` to exit. If `reduced_motion` is enabled in the configuration,
+the preview stays still.
+**Screensaver toggle** enables or disables an idle screensaver, initially disabled. It starts
+after two minutes without input when no interactive tool or message is open; press any key or
+tap the display to wake. **Screensaver picker** selects theme colors, a moving clock, Ocean,
+Sunset, or Forest; press `ENTER` to save or `ESC` to cancel. Both settings persist.
 **System → Clock format** toggles the title-bar and tool clocks between 12-hour and 24-hour time.
 **Themes** previews the full palette list with `UP`/`DOWN`; press `ENTER` to save or `ESC` to
-restore the prior theme. **Ambient preview** animates the current theme until any key is pressed.
-**Layout toggle** switches category pages between a list and a two-column grid; the choice is saved.
-In grid mode, `UP`/`DOWN` move between rows and `LEFT`/`RIGHT` move between columns.
-**Screensaver toggle** enables or disables a screensaver after two minutes of inactivity;
-**Screensaver picker** chooses animated theme colors or a moving clock. Press any key or tap
-the screen to dismiss it.
+restore the prior theme. **Layout toggle** cycles through compact list, spacious list, and a
+two-column grid; the choice is saved. In grid mode, `UP`/`DOWN` move between rows and
+`LEFT`/`RIGHT` move between columns.
 **Sound settings** controls app UI sounds independently of system volume. Sounds default to muted;
 use `M` to mute or unmute, arrow keys to adjust volume, `ENTER` to save, or `ESC` to cancel.
 **Media → Speaker** requests a short click at 50% app volume even when UI sounds are muted;
 listen for it and check the system volume if needed. Playback errors are shown in the app.
-**Media → Gallery** browses PNG files in `~/Pictures/Screenshots` (including screenshots saved
-by the app). Use `LEFT`/`RIGHT` or `Z`/`C` to browse and `ESC` to exit. Images are limited to
-1024 × 1024 pixels and 8 MiB each, and the folder to 512 PNGs; other image formats are not supported.
+**Media → Gallery** browses local directories and opens PNG and JPEG images. Use `ENTER` to view,
+`ESC` to return to the listing, and `LEFT`/`RIGHT` or `Z`/`C` to browse while viewing. Images are
+limited to 1024 × 1024 pixels and 8 MiB each.
 In the desktop simulator, **Expansion → [SIM] USB keyboard** simulates connection and US-layout
 keyboard reports: press `ENTER` to connect, type text, press `ENTER` to review, then `ENTER` to
 confirm. `ESC` cancels or disconnects. No USB input is sent to any computer. The physical-device
@@ -582,6 +612,18 @@ Or run the full configure, release build, and package flow with one workflow pre
 ```shell
 cmake --workflow --preset cp0-cross-package
 ```
+
+On WSL, if the checkout is on a Windows-mounted filesystem without Linux metadata, stage
+CPack on the Linux filesystem so package files do not become world-writable:
+
+```shell
+stage="$(mktemp -d)"
+cd build/cp0-cross
+cpack --config CPackConfig.cmake -C Release -B "$stage"
+```
+
+The package is still written to `dist/`. Check its modes with `dpkg-deb -c` before
+installing; directories and the executable should be `755`, and data files `644`.
 
 > [!NOTE]
 > Use Debian based Linux host with CPack generator 

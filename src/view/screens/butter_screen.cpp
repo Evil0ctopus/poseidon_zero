@@ -26,11 +26,13 @@ struct ToolSelectionBinding {
     lv_obj_t* rows[model::kToolsPageItemCount]{};
     lv_obj_t* labels[model::kToolsPageItemCount]{};
     lv_obj_t* list{nullptr};
+    const lv_font_t* compact_font{nullptr};
+    const lv_font_t* spacious_font{nullptr};
     int32_t row_count{model::kStandardToolItemCount};
     viewmodel::BaseViewModel* view_model{nullptr};
 };
 
-void tool_layout_observer(lv_observer_t* observer, lv_subject_t* subject) {
+void tool_grid_layout_observer(lv_observer_t* observer, lv_subject_t* subject) {
     auto* binding = static_cast<ToolSelectionBinding*>(lv_observer_get_user_data(observer));
     if (!binding || !binding->list) {
         return;
@@ -91,6 +93,23 @@ void tool_theme_observer(lv_observer_t* observer, lv_subject_t*) {
                                    binding->view_model->tool_selection(),
                                    false);
     }
+}
+
+void tool_spacious_layout_observer(lv_observer_t* observer, lv_subject_t* subject) {
+    auto* binding = static_cast<ToolSelectionBinding*>(lv_observer_get_user_data(observer));
+    if (!binding || !binding->view_model) {
+        return;
+    }
+    const bool spacious = lv_subject_get_int(subject) != 0;
+    for (int32_t index = 0; index < binding->row_count; ++index) {
+        lv_obj_set_height(binding->rows[index], spacious ? 25 : 18);
+        lv_obj_set_style_text_font(binding->labels[index],
+                                   spacious ? binding->spacious_font : binding->compact_font,
+                                   0);
+    }
+    lv_obj_update_layout(binding->list);
+    apply_tool_selection_style(binding, binding->view_model->tool_selection(), false);
+    lv_obj_scroll_to_view(binding->rows[binding->view_model->tool_selection()], LV_ANIM_OFF);
 }
 
 void tool_row_clicked(lv_event_t* event) {
@@ -185,7 +204,6 @@ void ButterScreen::build_content(lv_obj_t* content) {
             tools[index] = feature_label_storage[index];
         }
     };
-    char file_summary[40] = "Files";
     char gateway_summary[64] = "Gateway";
     char clock_summary[64] = "Clock";
     char uptime_summary[64] = "Uptime";
@@ -227,13 +245,6 @@ void ButterScreen::build_content(lv_obj_t* content) {
             {
                 const auto features = platform::tools_features();
                 set_feature_labels(features, tool_count);
-                const auto home = platform::list_directory("/home");
-                const auto media = platform::list_directory("/media");
-                std::snprintf(file_summary,
-                              sizeof(file_summary),
-                              "Files  %zu entries",
-                              home.size() + media.size());
-                tools[0] = file_summary;
                 bool valid = true;
                 const double result = platform::calculate_expression("1+1", valid);
                 char calculator_summary[64];
@@ -330,11 +341,13 @@ void ButterScreen::build_content(lv_obj_t* content) {
         tools[9] = "Clock format";
     } else if (view_model().current_page() == model::AppPage::Network) {
         const auto interfaces = platform::list_network_interfaces();
-        tools[0] = interfaces.empty() ? "No network interfaces" : "Interfaces  available";
+        tools[0] = !interfaces.error.empty() ? "Interfaces  unavailable"
+                   : interfaces.interfaces.empty() ? "No network interfaces"
+                                                   : "Interfaces  available";
         const auto gateway = platform::default_gateway();
         std::snprintf(gateway_summary,
                       sizeof(gateway_summary),
-                      "Gateway  %s",
+                      USE_DESKTOP ? "Host gateway  %s" : "Gateway  %s",
                       gateway.c_str());
         tools[1] = gateway_summary;
         tools[2] = "Ping  enter host";
@@ -364,9 +377,21 @@ void ButterScreen::build_content(lv_obj_t* content) {
                          reactive::ThemeRole::Surface);
 
     lv_obj_t* row_objects[kMaxToolCount] = {};
-    lv_obj_t* row_labels[kMaxToolCount] = {};
+    lv_obj_t* label_objects[kMaxToolCount] = {};
+    const lv_font_t* compact_font =
+        assets().load_standard_font(12, app::StandardFontWeight::Regular);
+    const lv_font_t* spacious_font =
+        assets().load_standard_font(14, app::StandardFontWeight::Regular);
+    if (!compact_font) {
+        compact_font = &lv_font_montserrat_12;
+    }
+    if (!spacious_font) {
+        spacious_font = &lv_font_montserrat_14;
+    }
     for (int32_t index = 0; index < tool_count; ++index) {
         auto* row = lv_button_create(list);
+        lv_group_remove_obj(row);
+        lv_obj_clear_flag(row, LV_OBJ_FLAG_CLICK_FOCUSABLE);
         row_objects[index] = row;
         lv_obj_remove_style_all(row);
         lv_obj_set_size(row, 280, 18);
@@ -379,13 +404,9 @@ void ButterScreen::build_content(lv_obj_t* content) {
                              reactive::ThemeRole::Button);
 
         auto* label = lv_label_create(row);
-        row_labels[index] = label;
+        label_objects[index] = label;
         lv_label_set_text(label, tools[index]);
-        const lv_font_t* label_font =
-            assets().load_standard_font(12, app::StandardFontWeight::Regular);
-        lv_obj_set_style_text_font(label,
-                                   label_font ? label_font : &lv_font_montserrat_12,
-                                   0);
+        lv_obj_set_style_text_font(label, compact_font, 0);
         lv_obj_set_width(label, 270);
         lv_obj_set_height(label, 16);
         lv_label_set_long_mode(label, LV_LABEL_LONG_DOT);
@@ -406,9 +427,11 @@ void ButterScreen::build_content(lv_obj_t* content) {
     binding->view_model = &view_model();
     binding->list = list;
     binding->row_count = tool_count;
+    binding->compact_font = compact_font;
+    binding->spacious_font = spacious_font;
     for (int32_t index = 0; index < tool_count; ++index) {
         binding->rows[index] = row_objects[index];
-        binding->labels[index] = row_labels[index];
+        binding->labels[index] = label_objects[index];
         lv_obj_add_event_cb(row_objects[index], tool_row_clicked, LV_EVENT_CLICKED, binding);
     }
     lv_obj_add_event_cb(content, cleanup_tool_selection, LV_EVENT_DELETE, binding);
@@ -421,7 +444,11 @@ void ButterScreen::build_content(lv_obj_t* content) {
                                 content,
                                 binding);
     lv_subject_add_observer_obj(view_model().grid_layout_subject(),
-                                tool_layout_observer,
+                                tool_grid_layout_observer,
+                                content,
+                                binding);
+    lv_subject_add_observer_obj(view_model().spacious_layout_subject(),
+                                tool_spacious_layout_observer,
                                 content,
                                 binding);
     lv_obj_update_layout(list);

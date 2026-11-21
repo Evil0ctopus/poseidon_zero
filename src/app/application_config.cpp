@@ -76,6 +76,7 @@ bool load_application_config(const std::string& path,
     std::string section;
     std::string line;
     std::size_t line_number = 0;
+    bool screensaver_style_set = false;
     while (std::getline(input, line)) {
         ++line_number;
         line = trim(line);
@@ -119,15 +120,15 @@ bool load_application_config(const std::string& path,
                 return false;
             }
         }
-        if (section == "application" && key == "grid_layout") {
-            if (!parse_bool(line.substr(separator + 1), config.grid_layout)) {
-                error = "invalid grid_layout value at line " + std::to_string(line_number);
+        if (section == "application" && key == "spacious_layout") {
+            if (!parse_bool(line.substr(separator + 1), config.spacious_layout)) {
+                error = "invalid spacious_layout value at line " + std::to_string(line_number);
                 return false;
             }
         }
-        if (section == "application" && key == "screensaver_enabled") {
-            if (!parse_bool(line.substr(separator + 1), config.screensaver_enabled)) {
-                error = "invalid screensaver_enabled value at line " + std::to_string(line_number);
+        if (section == "application" && key == "grid_layout") {
+            if (!parse_bool(line.substr(separator + 1), config.grid_layout)) {
+                error = "invalid grid_layout value at line " + std::to_string(line_number);
                 return false;
             }
         }
@@ -136,11 +137,12 @@ bool load_application_config(const std::string& path,
             int32_t style = 0;
             const auto parsed = std::from_chars(value.data(), value.data() + value.size(), style);
             if (parsed.ec != std::errc{} || parsed.ptr != value.data() + value.size() ||
-                style < 0 || style > 1) {
+                style < 0 || style > 4) {
                 error = "invalid screensaver_style value at line " + std::to_string(line_number);
                 return false;
             }
             config.screensaver_style = style;
+            screensaver_style_set = true;
         }
         if (section == "application" && key == "sound_enabled") {
             if (!parse_bool(line.substr(separator + 1), config.sound_enabled)) {
@@ -171,8 +173,28 @@ bool load_application_config(const std::string& path,
                 return false;
             }
         }
+        if (section == "application" && key == "screensaver_enabled") {
+            if (!parse_bool(line.substr(separator + 1), config.screensaver_enabled)) {
+                error = "invalid screensaver_enabled value at line " + std::to_string(line_number);
+                return false;
+            }
+        }
+        if (section == "application" && key == "screensaver_palette") {
+            const std::string value = trim(line.substr(separator + 1));
+            int32_t palette = 0;
+            const auto parsed = std::from_chars(value.data(), value.data() + value.size(), palette);
+            if (parsed.ec != std::errc{} || parsed.ptr != value.data() + value.size() ||
+                palette < 0 || palette >= model::kScreensaverPaletteCount) {
+                error = "invalid screensaver_palette value at line " + std::to_string(line_number);
+                return false;
+            }
+            config.screensaver_palette = palette;
+        }
     }
 
+    if (!screensaver_style_set) {
+        config.screensaver_style = config.screensaver_palette + 2;
+    }
     return true;
 }
 
@@ -184,7 +206,13 @@ bool save_application_config(const std::string& path,
         error = "theme_id is outside the supported range";
         return false;
     }
-    if (config.screensaver_style < 0 || config.screensaver_style > 1) {
+    if (config.screensaver_palette < 0 ||
+        config.screensaver_palette >= model::kScreensaverPaletteCount) {
+        error = "screensaver_palette is outside the supported range";
+        return false;
+    }
+
+    if (config.screensaver_style < 0 || config.screensaver_style > 4) {
         error = "screensaver_style is outside the supported range";
         return false;
     }
@@ -218,19 +246,21 @@ bool save_application_config(const std::string& path,
     bool wrote_dark_mode = false;
     bool wrote_theme_id = false;
     bool wrote_clock_24h = false;
+    bool wrote_spacious_layout = false;
     bool wrote_grid_layout = false;
-    bool wrote_screensaver_enabled = false;
     bool wrote_screensaver_style = false;
     bool wrote_sound_enabled = false;
     bool wrote_sound_volume = false;
     bool wrote_large_text = false;
     bool wrote_reduced_motion = false;
+    bool wrote_screensaver_enabled = false;
+    bool wrote_screensaver_palette = false;
     const std::string dark_mode_line = config.dark_mode ? "dark_mode=yes" : "dark_mode=no";
     const std::string theme_id_line = "theme_id=" + std::to_string(config.theme_id);
     const std::string clock_24h_line = config.clock_24h ? "clock_24h=yes" : "clock_24h=no";
+    const std::string spacious_layout_line =
+        config.spacious_layout ? "spacious_layout=yes" : "spacious_layout=no";
     const std::string grid_layout_line = config.grid_layout ? "grid_layout=yes" : "grid_layout=no";
-    const std::string screensaver_enabled_line =
-        config.screensaver_enabled ? "screensaver_enabled=yes" : "screensaver_enabled=no";
     const std::string screensaver_style_line =
         "screensaver_style=" + std::to_string(config.screensaver_style);
     const std::string sound_enabled_line = config.sound_enabled ? "sound_enabled=yes" : "sound_enabled=no";
@@ -238,6 +268,10 @@ bool save_application_config(const std::string& path,
     const std::string large_text_line = config.large_text ? "large_text=yes" : "large_text=no";
     const std::string reduced_motion_line =
         config.reduced_motion ? "reduced_motion=yes" : "reduced_motion=no";
+    const std::string screensaver_enabled_line =
+        config.screensaver_enabled ? "screensaver_enabled=yes" : "screensaver_enabled=no";
+    const std::string screensaver_palette_line =
+        "screensaver_palette=" + std::to_string(config.screensaver_palette);
 
     for (const auto& current_line : lines) {
         const auto normalized = trim(current_line);
@@ -256,13 +290,13 @@ bool save_application_config(const std::string& path,
                 updated.push_back(clock_24h_line);
                 wrote_clock_24h = true;
             }
+            if (in_application_section && !wrote_spacious_layout) {
+                updated.push_back(spacious_layout_line);
+                wrote_spacious_layout = true;
+            }
             if (in_application_section && !wrote_grid_layout) {
                 updated.push_back(grid_layout_line);
                 wrote_grid_layout = true;
-            }
-            if (in_application_section && !wrote_screensaver_enabled) {
-                updated.push_back(screensaver_enabled_line);
-                wrote_screensaver_enabled = true;
             }
             if (in_application_section && !wrote_screensaver_style) {
                 updated.push_back(screensaver_style_line);
@@ -283,6 +317,14 @@ bool save_application_config(const std::string& path,
             if (in_application_section && !wrote_reduced_motion) {
                 updated.push_back(reduced_motion_line);
                 wrote_reduced_motion = true;
+            }
+            if (in_application_section && !wrote_screensaver_enabled) {
+                updated.push_back(screensaver_enabled_line);
+                wrote_screensaver_enabled = true;
+            }
+            if (in_application_section && !wrote_screensaver_palette) {
+                updated.push_back(screensaver_palette_line);
+                wrote_screensaver_palette = true;
             }
             in_application_section = is_section(current_line, "application");
             found_application_section = found_application_section || in_application_section;
@@ -309,17 +351,17 @@ bool save_application_config(const std::string& path,
             }
             continue;
         }
+        if (in_application_section && is_key(current_line, "spacious_layout")) {
+            if (!wrote_spacious_layout) {
+                updated.push_back(spacious_layout_line);
+                wrote_spacious_layout = true;
+            }
+            continue;
+        }
         if (in_application_section && is_key(current_line, "grid_layout")) {
             if (!wrote_grid_layout) {
                 updated.push_back(grid_layout_line);
                 wrote_grid_layout = true;
-            }
-            continue;
-        }
-        if (in_application_section && is_key(current_line, "screensaver_enabled")) {
-            if (!wrote_screensaver_enabled) {
-                updated.push_back(screensaver_enabled_line);
-                wrote_screensaver_enabled = true;
             }
             continue;
         }
@@ -358,6 +400,20 @@ bool save_application_config(const std::string& path,
             }
             continue;
         }
+        if (in_application_section && is_key(current_line, "screensaver_enabled")) {
+            if (!wrote_screensaver_enabled) {
+                updated.push_back(screensaver_enabled_line);
+                wrote_screensaver_enabled = true;
+            }
+            continue;
+        }
+        if (in_application_section && is_key(current_line, "screensaver_palette")) {
+            if (!wrote_screensaver_palette) {
+                updated.push_back(screensaver_palette_line);
+                wrote_screensaver_palette = true;
+            }
+            continue;
+        }
         updated.push_back(current_line);
     }
 
@@ -376,6 +432,9 @@ bool save_application_config(const std::string& path,
     if (!wrote_clock_24h) {
         updated.push_back(clock_24h_line);
     }
+    if (!wrote_spacious_layout) {
+        updated.push_back(spacious_layout_line);
+    }
     if (!wrote_grid_layout) {
         updated.push_back(grid_layout_line);
     }
@@ -390,12 +449,19 @@ bool save_application_config(const std::string& path,
     }
     if (!wrote_sound_volume) {
         updated.push_back(sound_volume_line);
+
     }
     if (!wrote_large_text) {
         updated.push_back(large_text_line);
     }
     if (!wrote_reduced_motion) {
         updated.push_back(reduced_motion_line);
+    }
+    if (!wrote_screensaver_enabled) {
+        updated.push_back(screensaver_enabled_line);
+    }
+    if (!wrote_screensaver_palette) {
+        updated.push_back(screensaver_palette_line);
     }
 
     std::ofstream output(path, std::ios::trunc);

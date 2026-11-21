@@ -23,6 +23,18 @@ FeatureList wireless_features() {
         {"Wi-Fi status", "Read local connection state", FeatureRisk::Safe, true},
         {"Signal status", "Read connected Wi-Fi signal state", FeatureRisk::Safe, true},
         {"Bluetooth status", "Read local adapter state", FeatureRisk::Safe, true},
+        {"GATT",
+         "Find nearby BLE devices and browse their GATT services",
+         FeatureRisk::Authorized,
+#if USE_DESKTOP
+         false},
+#else
+         true},
+#endif
+        {"Tracker scan",
+         "Unavailable in this build; Bluetooth device discovery is not enabled",
+         FeatureRisk::Authorized,
+         false},
         {"Wi-Fi discovery",
          "Disabled placeholder; no nearby-device scan or packet collection is available",
          FeatureRisk::Authorized,
@@ -33,14 +45,6 @@ FeatureList wireless_features() {
          false},
         {"Portal / PMKID",
          "Disabled placeholder; no credential or handshake capture is performed",
-         FeatureRisk::Authorized,
-         false},
-        {"BLE scan / tracker",
-         "Unavailable in this build; Bluetooth device discovery is not enabled",
-         FeatureRisk::Authorized,
-         false},
-        {"BLE HID / GATT",
-         "Disabled placeholder; no advertising, input injection, flooding, writes, capture, or relay is performed",
          FeatureRisk::Authorized,
          false},
     }};
@@ -110,7 +114,7 @@ FeatureList expansion_features() {
 
 ToolFeatureList tools_features() {
     return {{
-        {"Files", "Count entries in the home and media folders", FeatureRisk::Safe, true},
+        {"Files", "Browse local directories and file details", FeatureRisk::Safe, true},
         {"Calculator", "Local arithmetic calculator", FeatureRisk::Safe, true},
         {"Clock", "Display local system time", FeatureRisk::Safe, true},
         {"Morse", "Generate or decode Morse", FeatureRisk::Safe, true},
@@ -122,10 +126,10 @@ ToolFeatureList tools_features() {
         {"Dice / 8-ball", "Roll dice, flip a coin, or get a local random answer", FeatureRisk::Safe, true},
         {"Screen test", "Cycle local display colors", FeatureRisk::Safe, true},
         {"Themes", "Preview and choose a saved display palette", FeatureRisk::Safe, true},
-        {"Ambient preview", "Show an animated current-theme preview", FeatureRisk::Safe, true},
-        {"Layout toggle", "Switch between list and two-column grid", FeatureRisk::Safe, true},
-        {"Screensaver toggle", "Enable or disable the idle screensaver", FeatureRisk::Safe, true},
-        {"Screensaver picker", "Choose theme colors or a moving clock", FeatureRisk::Safe, true},
+        {"Ambient preview", "Preview slowly changing current-theme colors", FeatureRisk::Safe, true},
+        {"Layout toggle", "Switch between compact, spacious, and two-column layouts", FeatureRisk::Safe, true},
+        {"Screensaver toggle", "Enable or disable the inactivity screensaver", FeatureRisk::Safe, true},
+        {"Screensaver picker", "Choose a color palette, theme colors, or moving clock", FeatureRisk::Safe, true},
         {"Sound settings", "Mute UI sounds or adjust their volume", FeatureRisk::Safe, true},
     }};
 }
@@ -139,7 +143,7 @@ FeatureList media_features() {
         {"Album art", "Unavailable; no local music metadata workflow is configured", FeatureRisk::Safe, false},
         {"Microphone", "Unavailable; no audio capture workflow is configured", FeatureRisk::Safe, false},
         {"Speaker", "Play a short speaker test sound", FeatureRisk::Safe, true},
-        {"Gallery", "Browse PNG screenshots in the home Pictures/Screenshots folder", FeatureRisk::Safe, true},
+        {"Gallery", "Browse and view local PNG and JPEG images", FeatureRisk::Safe, true},
     }};
 }
 

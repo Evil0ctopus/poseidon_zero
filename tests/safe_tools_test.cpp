@@ -1,8 +1,22 @@
+#include "gallery_image.h"
+#include "linux_network.h"
 #include "safe_tools.h"
+#include "tool_status.h"
 
+#include <cstdio>
+#include <jpeglib.h>
+#include <png.h>
+
+#include <chrono>
 #include <cmath>
+#include <filesystem>
+#include <fstream>
 #include <iostream>
+#include <iterator>
+#include <set>
+#include <sstream>
 #include <string>
+#include <utility>
 
 namespace {
 
@@ -38,10 +52,367 @@ bool expect_string(const std::string& actual,
     return true;
 }
 
+bool write_jpeg(const std::filesystem::path& path, unsigned int width) {
+#if defined(_WIN32)
+    FILE* file = _wfopen(path.c_str(), L"wb");
+#else
+    FILE* file = std::fopen(path.c_str(), "wb");
+#endif
+    if (!file) {
+        return false;
+    }
+    jpeg_compress_struct encoder{};
+    jpeg_error_mgr error{};
+    encoder.err = jpeg_std_error(&error);
+    jpeg_create_compress(&encoder);
+    jpeg_stdio_dest(&encoder, file);
+    encoder.image_width = width;
+    encoder.image_height = 1;
+    encoder.input_components = 3;
+    encoder.in_color_space = JCS_RGB;
+    jpeg_set_defaults(&encoder);
+    jpeg_set_quality(&encoder, 100, TRUE);
+    jpeg_start_compress(&encoder, TRUE);
+    std::vector<uint8_t> pixels(static_cast<std::size_t>(width) * 3U, 0);
+    for (unsigned int x = 0; x < width; ++x) {
+        pixels[x * 3U] = 255;
+    }
+    JSAMPROW row = pixels.data();
+    jpeg_write_scanlines(&encoder, &row, 1);
+    jpeg_finish_compress(&encoder);
+    jpeg_destroy_compress(&encoder);
+    return std::fclose(file) == 0;
+}
+
 } // namespace
 
 int main() {
     bool passed = true;
+    platform::NetworkInterfacesResult adapter_fixture;
+    adapter_fixture.interfaces = {
+        {"Wi-Fi", "192.0.2.1", true, true, false},
+        {"Ethernet", "192.0.2.2", false, true, true},
+        {"USB Ethernet", "", false, false, true},
+    };
+    const auto ethernet = platform::filter_ethernet_interfaces(std::move(adapter_fixture));
+    if (!ethernet.error.empty() || ethernet.interfaces.size() != 2 ||
+        ethernet.interfaces[0].name != "Ethernet" || ethernet.interfaces[0].connected ||
+        ethernet.interfaces[1].name != "USB Ethernet" || ethernet.interfaces[1].state_known) {
+        std::cerr << "Ethernet view must exclude Wi-Fi and preserve adapter state\n";
+        passed = false;
+    }
+    const std::string route_header =
+        "Iface Destination Gateway Flags RefCnt Use Metric Mask MTU Window IRTT\n";
+    std::istringstream routes(
+        route_header +
+        "wlan0 00000000 0101A8C0 0003 0 0 50 00000000 0 0 0\n"
+        "eth0 00000000 0100000A 0003 0 0 10 00000000 0 0 0\n"
+        "usb0 00000000 0102A8C0 0002 0 0 1 00000000 0 0 0\n"
+        "vpn0 00000000 0102A8C0 0003 0 0 1 000000FF 0 0 0\n");
+    passed &= expect_string(platform::parse_default_gateway(routes), "10.0.0.1",
+                            "lowest-metric active gateway");
+    std::istringstream malformed(route_header + "eth0 00000000 NOTHEX 0003 0 0 0 00000000\n");
+    passed &= expect_string(platform::parse_default_gateway(malformed), "Gateway data invalid",
+                            "malformed gateway");
+    std::istringstream no_gateway(route_header + "eth0 00000000 00000000 0001 0 0 0 00000000\n");
+    passed &= expect_string(platform::parse_default_gateway(no_gateway), "No gateway",
+                            "direct route without gateway");
+    std::istringstream direct_preferred(
+        route_header +
+        "wlan0 00000000 0101A8C0 0003 0 0 50 00000000\n"
+        "ppp0 00000000 00000000 0001 0 0 5 00000000\n");
+    passed &= expect_string(platform::parse_default_gateway(direct_preferred), "No gateway",
+                            "preferred direct route");
+    std::istringstream missing_routes("");
+    passed &= expect_string(platform::parse_default_gateway(missing_routes),
+                            "Route table unavailable", "unavailable route table");
+    const std::string arp_header =
+        "IP address       HW type     Flags       HW address            Mask     Device\n";
+    std::istringstream arp(arp_header +
+        "192.168.1.1 0x1 0x2 aa:bb:cc:dd:ee:ff * wlan0\n");
+    const auto arp_result = platform::parse_arp_table(arp);
+    if (!arp_result.error.empty() || arp_result.truncated || arp_result.entries.size() != 1 ||
+        arp_result.entries[0].address != "192.168.1.1" ||
+        arp_result.entries[0].hardware_address != "aa:bb:cc:dd:ee:ff" ||
+        arp_result.entries[0].interface_name != "wlan0") {
+        std::cerr << "ARP table should expose address, hardware address, and interface\n";
+        passed = false;
+    }
+    std::istringstream empty_arp(arp_header);
+    const auto empty_arp_result = platform::parse_arp_table(empty_arp);
+    if (!empty_arp_result.error.empty() || !empty_arp_result.entries.empty()) {
+        std::cerr << "An empty ARP table should be distinguished from an error\n";
+        passed = false;
+    }
+    std::istringstream invalid_arp(arp_header + "invalid row\n");
+    std::istringstream unavailable_arp("");
+    if (platform::parse_arp_table(invalid_arp).error.empty() ||
+        platform::parse_arp_table(unavailable_arp).error.empty()) {
+        std::cerr << "Malformed or unavailable ARP tables must report an error\n";
+        passed = false;
+    }
+    std::string many_arp = arp_header;
+    for (int i = 0; i < 33; ++i) {
+        many_arp += "192.168.1.1 0x1 0x2 aa:bb:cc:dd:ee:ff * wlan0\n";
+    }
+    std::istringstream large_arp(many_arp);
+    const auto limited_arp = platform::parse_arp_table(large_arp);
+    if (!limited_arp.error.empty() || !limited_arp.truncated || limited_arp.entries.size() != 32) {
+        std::cerr << "ARP listings must report truncation after 32 entries\n";
+        passed = false;
+    }
+#if defined(_WIN32)
+    if (platform::default_gateway() == "Desktop emulator") {
+        std::cerr << "Host gateway lookup must not return simulated data\n";
+        passed = false;
+    }
+    const auto host_interfaces = platform::list_network_interfaces();
+    if (!host_interfaces.error.empty() && !host_interfaces.interfaces.empty()) {
+        std::cerr << "Failed host enumeration must not return partial interfaces\n";
+        passed = false;
+    }
+    for (const auto& interface : host_interfaces.interfaces) {
+        if (interface.name.empty() || interface.name == "emulator") {
+            std::cerr << "Host interface listing must not use simulated adapters\n";
+            passed = false;
+        }
+    }
+    const auto host_arp = platform::arp_entries();
+    if (!host_arp.error.empty() && !host_arp.entries.empty()) {
+        std::cerr << "Failed host ARP enumeration must not return partial entries\n";
+        passed = false;
+    }
+    for (const auto& entry : host_arp.entries) {
+        if (entry.address.empty() || entry.hardware_address.empty() ||
+            entry.interface_name.empty()) {
+            std::cerr << "Host ARP entries must include address and interface information\n";
+            passed = false;
+        }
+    }
+#endif
+    const auto unique_part = std::chrono::steady_clock::now().time_since_epoch().count();
+    const auto temp = std::filesystem::temp_directory_path() /
+                      ("poseidon-files-" + std::to_string(unique_part));
+    std::error_code error;
+    if (!std::filesystem::create_directory(temp, error)) {
+        std::cerr << "Could not create temporary directory: " << error.message() << '\n';
+        return 1;
+    }
+    struct Cleanup {
+        std::filesystem::path path;
+        ~Cleanup() {
+            std::error_code ignored;
+            std::filesystem::remove_all(path, ignored);
+        }
+    } cleanup{temp};
+    std::filesystem::create_directory(temp / "folder", error);
+    {
+        std::ofstream output(temp / "sample.txt");
+        output << "hello";
+        if (!output || error) {
+            std::cerr << "Could not create browser test entries\n";
+            return 1;
+        }
+    }
+    const auto listing = platform::read_directory(temp.u8string());
+    if (!listing.error.empty() || listing.truncated || listing.entries.size() != 2 ||
+        !listing.entries[0].directory || listing.entries[0].name != "folder" ||
+        listing.entries[1].directory || listing.entries[1].name != "sample.txt" ||
+        listing.entries[1].size != 5) {
+        std::cerr << "Directory listing should show directories and file sizes\n";
+        passed = false;
+    }
+    if (platform::read_directory((temp / "missing").u8string()).error.empty()) {
+        std::cerr << "Missing directories must report an error\n";
+        passed = false;
+    }
+    for (int i = 0; i < 64; ++i) {
+        std::ofstream output(temp / ("entry-" + std::to_string(i)));
+        if (!output) {
+            std::cerr << "Could not create truncation test entries\n";
+            return 1;
+        }
+    }
+    const auto limited = platform::read_directory(temp.u8string());
+    if (!limited.error.empty() || !limited.truncated || limited.entries.size() != 64) {
+        std::cerr << "Large directories must report that the listing is limited\n";
+        passed = false;
+    }
+    const auto next_page = platform::read_directory(temp.u8string(), platform::kDirectoryPageSize);
+    if (!next_page.error.empty() || next_page.truncated || next_page.entries.size() != 2) {
+        std::cerr << "Later directory pages should expose the remaining entries\n";
+        passed = false;
+    }
+    std::set<std::string> page_names;
+    for (const auto& entry : limited.entries) {
+        page_names.insert(entry.name);
+    }
+    for (const auto& entry : next_page.entries) {
+        page_names.insert(entry.name);
+    }
+    if (page_names.size() != 66 || page_names.count("folder") != 1 ||
+        page_names.count("sample.txt") != 1) {
+        std::cerr << "Directory pages must contain each entry exactly once\n";
+        passed = false;
+    }
+    const std::atomic_bool cancelled{true};
+    const auto cancelled_listing = platform::read_directory(temp.u8string(), 0, &cancelled);
+    if (cancelled_listing.error.empty() || !cancelled_listing.entries.empty()) {
+        std::cerr << "Canceled directory reads must not report a successful listing\n";
+        passed = false;
+    }
+    const auto png_path = temp / "image.png";
+    png_image png{};
+    png.version = PNG_IMAGE_VERSION;
+    png.width = 2;
+    png.height = 1;
+    png.format = PNG_FORMAT_BGRA;
+    const uint8_t expected_pixels[] = {0, 0, 255, 255, 0, 255, 0, 128};
+    FILE* png_file = nullptr;
+#if defined(_WIN32)
+    png_file = _wfopen(png_path.c_str(), L"wb");
+#else
+    png_file = std::fopen(png_path.c_str(), "wb");
+#endif
+    if (!png_file || !png_image_write_to_stdio(&png, png_file, 0, expected_pixels, 0, nullptr)) {
+        if (png_file) {
+            std::fclose(png_file);
+        }
+        std::cerr << "Could not create PNG test image\n";
+        return 1;
+    }
+    std::fclose(png_file);
+    const auto image = platform::read_gallery_image(png_path);
+    if (!image.error.empty() || image.width != 2 || image.height != 1 ||
+        image.pixels != std::vector<uint8_t>(std::begin(expected_pixels),
+                                             std::end(expected_pixels))) {
+        std::cerr << "Gallery must decode PNG pixels and transparency correctly\n";
+        passed = false;
+    }
+    if (platform::read_gallery_image(temp / "sample.txt").error.empty() ||
+        platform::read_gallery_image(temp / "missing.png").error.empty() ||
+        platform::read_gallery_image(png_path, &cancelled).error.empty()) {
+        std::cerr << "Gallery must report invalid, missing, and canceled image reads\n";
+        passed = false;
+    }
+    const auto boundary_png = temp / "boundary.png";
+    png.width = 1024;
+    std::vector<uint8_t> boundary_pixels(static_cast<std::size_t>(png.width) * 4U, 255);
+#if defined(_WIN32)
+    png_file = _wfopen(boundary_png.c_str(), L"wb");
+#else
+    png_file = std::fopen(boundary_png.c_str(), "wb");
+#endif
+    if (!png_file || !png_image_write_to_stdio(&png, png_file, 0,
+                                               boundary_pixels.data(), 0, nullptr)) {
+        if (png_file) {
+            std::fclose(png_file);
+        }
+        std::cerr << "Could not create boundary PNG test image\n";
+        return 1;
+    }
+    std::fclose(png_file);
+    if (!platform::read_gallery_image(boundary_png).error.empty()) {
+        std::cerr << "Gallery must accept images at the 1024-pixel boundary\n";
+        passed = false;
+    }
+    const auto oversized_png = temp / "oversized.png";
+    png.width = 1025;
+    boundary_pixels.resize(static_cast<std::size_t>(png.width) * 4U, 255);
+#if defined(_WIN32)
+    png_file = _wfopen(oversized_png.c_str(), L"wb");
+#else
+    png_file = std::fopen(oversized_png.c_str(), "wb");
+#endif
+    if (!png_file || !png_image_write_to_stdio(&png, png_file, 0,
+                                               boundary_pixels.data(), 0, nullptr)) {
+        if (png_file) {
+            std::fclose(png_file);
+        }
+        std::cerr << "Could not create oversized PNG test image\n";
+        return 1;
+    }
+    std::fclose(png_file);
+    if (platform::read_gallery_image(oversized_png).error.empty()) {
+        std::cerr << "Gallery must reject images wider than 1024 pixels\n";
+        passed = false;
+    }
+    const auto large_file = temp / "large.png";
+    constexpr std::streamoff file_limit = 8 * 1024 * 1024;
+    {
+        std::ofstream output(large_file, std::ios::binary);
+        output.seekp(file_limit - 1);
+        output.put('\0');
+        if (!output) {
+            std::cerr << "Could not create size-boundary test file\n";
+            return 1;
+        }
+    }
+    if (platform::read_gallery_image(large_file).error.find("8 MiB") != std::string::npos) {
+        std::cerr << "Gallery must not reject files at the 8 MiB boundary for size\n";
+        passed = false;
+    }
+    {
+        std::ofstream output(large_file, std::ios::binary | std::ios::app);
+        output.put('\0');
+        if (!output) {
+            std::cerr << "Could not create oversized test file\n";
+            return 1;
+        }
+    }
+    if (platform::read_gallery_image(large_file).error.find("8 MiB") == std::string::npos) {
+        std::cerr << "Gallery must reject files larger than 8 MiB\n";
+        passed = false;
+    }
+    const auto jpeg_path = temp / "image.jpg";
+    const auto boundary_jpeg = temp / "boundary.jpg";
+    const auto oversized_jpeg = temp / "wide.jpg";
+    if (!write_jpeg(jpeg_path, 8) || !write_jpeg(boundary_jpeg, 1024) ||
+        !write_jpeg(oversized_jpeg, 1025)) {
+        std::cerr << "Could not create JPEG test images\n";
+        return 1;
+    }
+    const auto jpeg = platform::read_gallery_image(jpeg_path);
+    if (!jpeg.error.empty() || jpeg.width != 8 || jpeg.height != 1 ||
+        jpeg.pixels.size() != 32 || jpeg.pixels[0] > 20 || jpeg.pixels[1] > 20 ||
+        jpeg.pixels[2] < 230 || jpeg.pixels[3] != 255) {
+        std::cerr << "Gallery must decode JPEG pixels as opaque BGRA\n";
+        passed = false;
+    }
+    if (!platform::read_gallery_image(boundary_jpeg).error.empty() ||
+        platform::read_gallery_image(oversized_jpeg).error.empty()) {
+        std::cerr << "Gallery must enforce the 1024-pixel JPEG dimension boundary\n";
+        passed = false;
+    }
+    {
+        std::ofstream output(temp / "broken.jpg", std::ios::binary);
+        output.put(static_cast<char>(0xff));
+        output.put(static_cast<char>(0xd8));
+        output.put('\0');
+    }
+    if (platform::read_gallery_image(temp / "broken.jpg").error.empty()) {
+        std::cerr << "Gallery must report invalid JPEG files\n";
+        passed = false;
+    }
+    {
+        std::ifstream input(jpeg_path, std::ios::binary);
+        std::vector<char> bytes((std::istreambuf_iterator<char>(input)),
+                                std::istreambuf_iterator<char>());
+        if (bytes.size() < 3) {
+            std::cerr << "JPEG fixture is unexpectedly short\n";
+            return 1;
+        }
+        std::ofstream output(temp / "truncated.jpg", std::ios::binary);
+        output.write(bytes.data(), static_cast<std::streamsize>(bytes.size() - 2));
+        if (!output) {
+            std::cerr << "Could not create truncated JPEG fixture\n";
+            return 1;
+        }
+    }
+    if (platform::read_gallery_image(temp / "truncated.jpg").error.empty()) {
+        std::cerr << "Gallery must report incomplete JPEG files\n";
+        passed = false;
+    }
     std::tm sample_time{};
     sample_time.tm_hour = 13;
     sample_time.tm_min = 5;
