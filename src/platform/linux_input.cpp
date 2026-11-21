@@ -126,13 +126,15 @@ void ensure_long_press_timer() {
     }
 }
 
-void route_key_state(uint32_t key, bool pressed) {
+bool route_key_state(uint32_t key, bool pressed) {
+    bool consumed = pressed_key == key && pressed_key_consumed;
     const bool new_hold = pressed && (!last_key_pressed || pressed_key != key);
     if (new_hold) {
         pressed_key = key;
         press_started_at = lv_tick_get();
         long_press_sent = false;
         pressed_key_consumed = emit_global_key(key, false);
+        consumed = pressed_key_consumed;
         ensure_long_press_timer();
         if (!pressed_key_consumed) {
             dispatch_nav_key(key);
@@ -151,6 +153,7 @@ void route_key_state(uint32_t key, bool pressed) {
 
     last_key = key;
     last_key_pressed = pressed;
+    return consumed;
 }
 
 void key_event_cb(lv_event_t* event) {
@@ -173,7 +176,9 @@ void key_event_cb(lv_event_t* event) {
         const auto key = keypad->router_key;
         const bool pressed = keypad->router_pressed;
 
-        route_key_state(key, pressed);
+        if (route_key_state(key, pressed)) {
+            lv_indev_reset(indev, nullptr);
+        }
         return;
     }
 #endif
@@ -181,7 +186,10 @@ void key_event_cb(lv_event_t* event) {
     const auto key = lv_indev_get_key(indev);
     const bool pressed = lv_indev_get_state(indev) == LV_INDEV_STATE_PRESSED;
 
-    route_key_state(key, pressed);
+    if (route_key_state(key, pressed)) {
+        // A consumed shortcut must not also click the focused LVGL widget.
+        lv_indev_reset(indev, nullptr);
+    }
 }
 
 #if !USE_DESKTOP

@@ -60,6 +60,10 @@ Current UI:
   expansion, tools, and media.
 - Category pages: keyboard-navigable, scrollable tool lists with status feedback for
   unavailable hardware features and visibly marked `[OFF]` parity placeholders.
+  - On the Windows simulator, Network → Interfaces reports the host's adapters, not the
+    CardputerZero's. Ethernet, gateway, and ARP table likewise show host data; these views do not
+    initiate a scan or connection. Use `UP`/`DOWN` to browse entries and `ESC` to close the view.
+    The ARP view shows at most 32 entries and marks a truncated list with `+`.
 - System page: live device status, a saved theme picker, and a 12/24-hour clock setting. Display
   brightness controls are available when the Linux backlight interface is supported; the desktop
   simulator reports brightness control as unsupported.
@@ -71,6 +75,21 @@ On tool pages, use `UP`/`DOWN` or `Z`/`C` to move through the list, `ENTER` to a
 item, and `ESC` to return home. In **System → Display brightness**, `Z`/`LEFT` and `C`/`RIGHT`
 adjust brightness in 5% steps; `ENTER` or `ESC` finishes. The control is available only when
 exactly one readable and writable device is exposed under `/sys/class/backlight`.
+**Tools → Layout toggle** switches all category lists between compact and larger, spacious rows;
+the choice is saved.
+
+**Media → Gallery** browses local directories and opens PNG and JPEG images with `ENTER`; `ESC` returns
+to the listing. Images are read on a background worker and limited to 8 MiB on disk and
+1024 × 1024 pixels. Unsupported or unreadable files show an error. JPEG EXIF orientation
+is not applied.
+
+**Wireless → GATT** scans for nearby Bluetooth Low Energy advertisements for eight seconds.
+Use `UP`/`DOWN` (or `Z`/`C`) to choose a device and `ENTER` to connect and list its services
+and characteristics; `ESC` cancels or goes back. Only select devices you are authorized to
+inspect. The browser does not pair, read or write characteristic values. It disconnects after
+collecting the service list if it initiated the connection. Bluetooth and BlueZ must be enabled;
+the desktop simulator cannot scan. A device must be advertising to appear in the scan. The list
+shows at most 40 devices and 128 services or characteristics.
 
 ## Repository Layout
 
@@ -459,6 +478,13 @@ The counter page uses direct keyboard shortcuts:
 | `Left` | Decrease the counter |
 | `Right` | Increase the counter |
 
+### Files
+
+**Tools → Files** browses local directories read-only, starting at the home directory. Use
+`UP`/`DOWN` (or `F`/`X`) to select an entry, `ENTER` to open a directory, `BACKSPACE` to go
+up, and `ESC` to exit or cancel a directory read. File sizes are shown when available. Use `P`/`N` to browse pages of
+64 entries; a `+` after the item number indicates another page.
+
 ### Calculator
 
 Open **Tools**, select **Calculator**, and press `ENTER`. Type an arithmetic expression using
@@ -477,9 +503,16 @@ Ethernet, and gateway; it runs locally and does not issue commands to a USB-conn
 **Flashlight** displays a full-white screen until a key is pressed. **Dice / 8-ball** switches
 between dice, coin, and 8-ball with `UP`/`DOWN` (or `M`), rolls with `ENTER`, and exits with `ESC`.
 **Screen test** cycles through solid display colors with any key and exits with `ESC`.
+**Ambient preview** shows slowly changing colors; use `LEFT`/`RIGHT` or `Z`/`C` to select
+Ocean, Sunset, or Forest, and `ESC` to exit. If `reduced_motion` is enabled in the configuration,
+the preview stays still.
+**Screensaver toggle** enables or disables an idle screensaver, initially disabled. It starts
+after one minute without input when no interactive tool or message is open; press any key or
+tap the display to wake. **Screensaver picker** selects Ocean, Sunset, or Forest with
+`LEFT`/`RIGHT` or `Z`/`C`; press `ENTER` to save or `ESC` to cancel. Both settings persist.
 **System → Clock format** toggles the title-bar and tool clocks between 12-hour and 24-hour time.
 **Themes** previews the full palette list with `UP`/`DOWN`; press `ENTER` to save or `ESC` to
-restore the prior theme. Ambient preview, alternate layout, screensaver, and sound settings remain
+restore the prior theme. Alternate layout and sound settings remain
 visible as `[OFF]` entries because those Zero implementations are not available.
 **Network → Diagnostics** saves a sanitized support report in the home folder. **System** exposes
 memory, Wi-Fi, Bluetooth, Ethernet, storage, battery, clock, and
@@ -566,6 +599,18 @@ Or run the full configure, release build, and package flow with one workflow pre
 ```shell
 cmake --workflow --preset cp0-cross-package
 ```
+
+On WSL, if the checkout is on a Windows-mounted filesystem without Linux metadata, stage
+CPack on the Linux filesystem so package files do not become world-writable:
+
+```shell
+stage="$(mktemp -d)"
+cd build/cp0-cross
+cpack --config CPackConfig.cmake -C Release -B "$stage"
+```
+
+The package is still written to `dist/`. Check its modes with `dpkg-deb -c` before
+installing; directories and the executable should be `755`, and data files `644`.
 
 > [!NOTE]
 > Use Debian based Linux host with CPack generator 

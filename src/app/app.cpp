@@ -9,6 +9,7 @@
 #include "application_config.h"
 #include "asset_manager.h"
 #include "backlight.h"
+#include "bluetooth_gatt.h"
 #include "capabilities.h"
 #include "device_status.h"
 #include "help_popup.h"
@@ -23,10 +24,13 @@
 #include "tool_status.h"
 #include "linux_network.h"
 #include "feature_catalog.h"
+#include "gallery_image.h"
 #include "theme.h"
 #include "toast.h"
+#include "src/misc/cache/instance/lv_image_cache.h"
 
 #include <algorithm>
+#include <atomic>
 #include <chrono>
 #include <cstdint>
 #include <cstdlib>
@@ -38,6 +42,7 @@
 #include <memory>
 #include <mutex>
 #include <random>
+#include <stdexcept>
 #include <string>
 #include <system_error>
 #include <thread>
@@ -167,14 +172,49 @@ public:
     ~ShortcutController() {
         platform::clear_key_release_listener(key_release_listener, this);
         platform::clear_global_key_listener(global_key_listener, this);
+        if (gatt_task_) {
+            gatt_task_->cancelled = true;
+        }
+        if (gatt_thread_.joinable()) {
+            gatt_thread_.join();
+        }
         if (network_thread_.joinable()) {
             network_thread_.join();
+        }
+        if (file_task_) {
+            file_task_->cancelled = true;
+        }
+        if (file_thread_.joinable()) {
+            file_thread_.join();
+        }
+        if (gallery_task_) {
+            gallery_task_->cancelled = true;
+        }
+        if (gallery_thread_.joinable()) {
+            gallery_thread_.join();
         }
         close_visual_tool();
     }
 
     void update() {
         update_network_query();
+        update_gatt();
+        update_file_browser();
+        update_gallery_image();
+        if (visual_tool_mode_ == VisualToolMode::Ambient ||
+            visual_tool_mode_ == VisualToolMode::Screensaver) {
+            update_ambient();
+        }
+        else if (visual_tool_mode_ == VisualToolMode::None &&
+                 !screensaver_picker_active_ && !theme_picker_active_ &&
+                 !file_browser_active_ && !interfaces_active_ && !arp_active_ &&
+                 !chance_tool_active_ && !brightness_adjustment_ &&
+                 text_tool_mode_ == TextToolMode::None &&
+                 gatt_stage_ == GattStage::None && !network_query_ &&
+                 !help_popup_->visible() && !toast_->visible() &&
+                 view_model_.screensaver_due(lv_display_get_inactive_time(nullptr))) {
+            start_screensaver();
+        }
     }
 
 private:
@@ -190,6 +230,9 @@ private:
         None,
         Flashlight,
         ScreenTest,
+        Ambient,
+        Screensaver,
+        Gallery,
     };
 
     struct NetworkQueryState {
@@ -199,6 +242,222 @@ private:
         bool dns{false};
         bool complete{false};
     };
+
+    struct FileQueryState {
+        std::atomic_bool cancelled{false};
+        std::mutex mutex;
+        std::filesystem::path directory;
+        std::size_t offset{0};
+        platform::DirectoryResult result;
+        bool complete{false};
+    };
+
+    struct GalleryQueryState {
+        std::atomic_bool cancelled{false};
+        std::mutex mutex;
+        platform::GalleryImage result;
+        bool complete{false};
+    };
+
+    enum class GattStage {
+        None,
+        Scanning,
+        Devices,
+        Connecting,
+        Entries,
+        Empty,
+        Error,
+    };
+
+    struct GattTask {
+        std::atomic_bool cancelled{false};
+        std::mutex mutex;
+        bool complete{false};
+        bool scan{false};
+        platform::BluetoothScanResult scan_result;
+        platform::GattBrowseResult browse_result;
+    };
+
+    void start_gatt_scan() {
+        if (gatt_task_) {
+            toast_->show("Previous Bluetooth operation is stopping",
+                         view::widgets::ToastTone::Warning, 3200);
+            return;
+        }
+        auto task = std::make_shared<GattTask>();
+        task->scan = true;
+        gatt_task_ = task;
+        gatt_stage_ = GattStage::Scanning;
+        toast_->show_persistent("Scanning nearby BLE devices...\nESC cancels");
+        try {
+            gatt_thread_ = std::thread([task] {
+                platform::BluetoothScanResult result;
+                try {
+                    result = platform::scan_ble_devices(task->cancelled);
+                } catch (const std::exception& error) {
+                    result.error = std::string("Bluetooth scan failed: ") + error.what();
+                }
+                std::lock_guard<std::mutex> lock(task->mutex);
+                task->scan_result = std::move(result);
+                task->complete = true;
+            });
+        } catch (const std::system_error& error) {
+            gatt_task_.reset();
+            gatt_stage_ = GattStage::Error;
+            gatt_error_ = "Could not start scan: " + error.code().message();
+            show_gatt();
+        }
+    }
+
+    void start_gatt_browse() {
+        if (gatt_task_ || gatt_device_index_ >= gatt_devices_.size()) {
+            toast_->show("Bluetooth device is unavailable",
+                         view::widgets::ToastTone::Warning, 3200);
+            return;
+        }
+        const auto device = gatt_devices_[gatt_device_index_];
+        auto task = std::make_shared<GattTask>();
+        gatt_task_ = task;
+        gatt_stage_ = GattStage::Connecting;
+        toast_->show_persistent("Connecting to selected device...\nESC cancels");
+        try {
+            gatt_thread_ = std::thread([task, device] {
+                platform::GattBrowseResult result;
+                try {
+                    result = platform::browse_gatt(device, task->cancelled);
+                } catch (const std::exception& error) {
+                    result.error = std::string("GATT browse failed: ") + error.what();
+                }
+                std::lock_guard<std::mutex> lock(task->mutex);
+                task->browse_result = std::move(result);
+                task->complete = true;
+            });
+        } catch (const std::system_error& error) {
+            gatt_task_.reset();
+            gatt_stage_ = GattStage::Error;
+            gatt_error_ = "Could not start connection: " + error.code().message();
+            show_gatt();
+        }
+    }
+
+    void show_gatt() {
+        std::string message;
+        if (gatt_stage_ == GattStage::Devices && !gatt_devices_.empty()) {
+            const auto& device = gatt_devices_[gatt_device_index_];
+            message = "BLE " + std::to_string(gatt_device_index_ + 1) + "/" +
+                      std::to_string(gatt_devices_.size()) + "\n" +
+                      (device.name.empty() ? "Unnamed device" : device.name) + "\n" +
+                      device.address + "\nUP/DOWN select  ENTER open\nESC back";
+        } else if (gatt_stage_ == GattStage::Entries && !gatt_entries_.empty()) {
+            const auto& entry = gatt_entries_[gatt_entry_index_];
+            message = std::string(entry.characteristic ? "Characteristic " : "Service ") +
+                      std::to_string(gatt_entry_index_ + 1) + "/" +
+                      std::to_string(gatt_entries_.size()) + "\n" + entry.uuid +
+                      "\nUP/DOWN browse  ESC back";
+        } else if (gatt_stage_ == GattStage::Empty) {
+            message = gatt_devices_.empty()
+                          ? "No BLE devices found\nMake the device advertise\nENTER rescan  ESC back"
+                          : "No GATT services found\nESC back";
+        } else if (gatt_stage_ == GattStage::Error) {
+            message = "Bluetooth error\n" + gatt_error_ + "\nENTER rescan  ESC back";
+        } else {
+            return;
+        }
+        toast_->show_persistent(message, gatt_stage_ == GattStage::Error
+                                             ? view::widgets::ToastTone::Warning
+                                             : view::widgets::ToastTone::Default);
+    }
+
+    void update_gatt() {
+        const auto task = gatt_task_;
+        if (!task) {
+            return;
+        }
+        {
+            std::lock_guard<std::mutex> lock(task->mutex);
+            if (!task->complete) {
+                return;
+            }
+        }
+        if (gatt_thread_.joinable()) {
+            gatt_thread_.join();
+        }
+        gatt_task_.reset();
+        if (task->cancelled) {
+            const auto& error = task->scan ? task->scan_result.error : task->browse_result.error;
+            if (!error.empty()) {
+                LOG_WARN("Bluetooth cleanup failed: {}", error);
+                toast_->show("Bluetooth cleanup failed\n" + error,
+                             view::widgets::ToastTone::Warning, 5200);
+            }
+            return;
+        }
+        if (task->scan) {
+            gatt_error_ = task->scan_result.error;
+            gatt_devices_ = std::move(task->scan_result.devices);
+            gatt_device_index_ = 0;
+            gatt_stage_ = !gatt_error_.empty() ? GattStage::Error
+                          : gatt_devices_.empty() ? GattStage::Empty
+                                                  : GattStage::Devices;
+        } else {
+            gatt_error_ = task->browse_result.error;
+            gatt_entries_ = std::move(task->browse_result.entries);
+            gatt_entry_index_ = 0;
+            gatt_stage_ = !gatt_error_.empty() ? GattStage::Error
+                          : gatt_entries_.empty() ? GattStage::Empty
+                                                  : GattStage::Entries;
+        }
+        show_gatt();
+    }
+
+    bool handle_gatt_key(uint32_t key, bool long_pressed) {
+        if (long_pressed) {
+            return true;
+        }
+        if (key == LV_KEY_ESC || key == LV_KEY_BACKSPACE) {
+            if (gatt_task_) {
+                gatt_task_->cancelled = true;
+            }
+            if (gatt_stage_ == GattStage::Entries ||
+                (gatt_stage_ == GattStage::Empty && !gatt_devices_.empty())) {
+                gatt_stage_ = GattStage::Devices;
+                show_gatt();
+            } else {
+                gatt_stage_ = GattStage::None;
+                toast_->hide();
+            }
+            return true;
+        }
+        const bool previous = key == LV_KEY_UP || key == LV_KEY_LEFT || key == 'f' || key == 'z';
+        const bool next = key == LV_KEY_DOWN || key == LV_KEY_RIGHT || key == 'x' || key == 'c';
+        if (previous || next) {
+            std::size_t* index = nullptr;
+            std::size_t count = 0;
+            if (gatt_stage_ == GattStage::Devices) {
+                index = &gatt_device_index_;
+                count = gatt_devices_.size();
+            } else if (gatt_stage_ == GattStage::Entries) {
+                index = &gatt_entry_index_;
+                count = gatt_entries_.size();
+            }
+            if (index && count) {
+                if (previous && *index > 0) {
+                    --*index;
+                } else if (next && *index + 1 < count) {
+                    ++*index;
+                }
+                show_gatt();
+            }
+        } else if (key == LV_KEY_ENTER) {
+            if (gatt_stage_ == GattStage::Devices) {
+                start_gatt_browse();
+            } else if (gatt_stage_ == GattStage::Error ||
+                       (gatt_stage_ == GattStage::Empty && gatt_devices_.empty())) {
+                start_gatt_scan();
+            }
+        }
+        return true;
+    }
 
     void show_text_tool_prompt(view::widgets::ToastTone tone =
                                    view::widgets::ToastTone::Default,
@@ -301,15 +560,301 @@ private:
         return true;
     }
 
-    void show_file_summary() {
+    static std::string file_display_text(const std::string& value, std::size_t limit) {
+        std::string result;
+        std::size_t characters = 0;
+        for (const unsigned char character : value) {
+            if ((character & 0xc0) != 0x80) {
+                if (characters == limit) {
+                    result += "...";
+                    break;
+                }
+                ++characters;
+            }
+            result += character < 0x20 || character == 0x7f ? '?' : static_cast<char>(character);
+        }
+        return result;
+    }
+
+    void show_file_browser() {
+        std::string folder = file_directory_.filename().u8string();
+        if (folder.empty()) {
+            folder = file_directory_.root_path().u8string();
+        }
+        std::string message = (file_gallery_mode_ ? "Gallery: " : "Files: ") +
+                              file_display_text(folder, 20);
+        if (!file_notice_.empty()) {
+            message += "\n" + file_display_text(file_notice_, 30);
+        }
+        else if (file_entries_.empty()) {
+            message += "\nEmpty directory";
+        }
+        else {
+            const auto& entry = file_entries_[file_selection_];
+            message += "\nItem " + std::to_string(file_offset_ + file_selection_ + 1) +
+                       (file_truncated_ ? "+" : "") +
+                       (entry.directory ? " DIR " : " FILE ") +
+                       file_display_text(entry.name, 22);
+            if (!entry.directory) {
+                message += entry.size >= 0 ? "\n" + std::to_string(entry.size) + " bytes"
+                                           : "\nSize unavailable";
+            }
+        }
+        message += file_gallery_mode_ ? "\nUP/DOWN select  ENTER view\n"
+                                      : "\nUP/DOWN select  ENTER open\n";
+        message += "P/N page  BACK up  ESC exit";
+        toast_->show_persistent(message, file_notice_.empty()
+                                             ? view::widgets::ToastTone::Default
+                                             : view::widgets::ToastTone::Warning);
+    }
+
+    bool open_file_directory(const std::filesystem::path& directory, std::size_t offset = 0) {
+        if (file_task_) {
+            file_notice_ = "Previous file read is stopping";
+            if (file_browser_active_) {
+                show_file_browser();
+            } else {
+                toast_->show("Files\n" + file_notice_, view::widgets::ToastTone::Warning, 4200);
+            }
+            return false;
+        }
+        auto task = std::make_shared<FileQueryState>();
+        task->directory = directory;
+        task->offset = offset;
+        file_task_ = task;
+        try {
+            file_thread_ = std::thread([task] {
+                platform::DirectoryResult result;
+                try {
+                    result = platform::read_directory(task->directory.u8string(),
+                                                      task->offset, &task->cancelled);
+                } catch (const std::exception& error) {
+                    result.error = std::string("Directory read failed: ") + error.what();
+                }
+                std::lock_guard<std::mutex> lock(task->mutex);
+                task->result = std::move(result);
+                task->complete = true;
+            });
+        } catch (const std::system_error& error) {
+            file_task_.reset();
+            file_notice_ = "Could not start file read: " + error.code().message();
+            if (file_browser_active_) {
+                show_file_browser();
+            } else {
+                toast_->show("Files\n" + file_notice_, view::widgets::ToastTone::Error, 4200);
+            }
+            return false;
+        }
+        if (!file_browser_active_) {
+            file_directory_ = directory;
+            file_entries_.clear();
+            file_selection_ = 0;
+            file_offset_ = 0;
+            file_truncated_ = false;
+        }
+        file_browser_active_ = true;
+        toast_->show_persistent("Opening directory...\nESC cancels");
+        return true;
+    }
+
+    void update_file_browser() {
+        const auto task = file_task_;
+        if (!task) {
+            return;
+        }
+        {
+            std::lock_guard<std::mutex> lock(task->mutex);
+            if (!task->complete) {
+                return;
+            }
+        }
+        if (file_thread_.joinable()) {
+            file_thread_.join();
+        }
+        file_task_.reset();
+        if (task->cancelled || !file_browser_active_) {
+            return;
+        }
+        if (!task->result.error.empty()) {
+            file_notice_ = task->result.error;
+        } else {
+            file_directory_ = task->directory;
+            file_entries_ = std::move(task->result.entries);
+            file_truncated_ = task->result.truncated;
+            file_offset_ = task->offset;
+            file_selection_ = 0;
+            file_notice_.clear();
+        }
+        show_file_browser();
+    }
+
+    void start_file_browser(bool gallery = false) {
         const char* home = std::getenv("HOME");
-        const std::string home_path = home && home[0] != '\0' ? home : "/home";
-        const auto home_entries = platform::list_directory(home_path);
-        const auto media_entries = platform::list_directory("/media");
-        const std::string message =
-            "Files\nHome: " + std::to_string(home_entries.size()) +
-            " entries\nMedia: " + std::to_string(media_entries.size()) + " entries";
-        toast_->show(message, view::widgets::ToastTone::Default, 5200);
+#if USE_DESKTOP && defined(_WIN32)
+        if (!home || home[0] == '\0') {
+            home = std::getenv("USERPROFILE");
+        }
+#endif
+        if (!home || home[0] == '\0') {
+            toast_->show("Files\nHome directory is not configured",
+                         view::widgets::ToastTone::Error, 4200);
+            return;
+        }
+        try {
+            file_gallery_mode_ = gallery;
+            open_file_directory(std::filesystem::u8path(home));
+        } catch (const std::filesystem::filesystem_error& error) {
+            toast_->show("Files\nInvalid home path: " + std::string(error.what()),
+                         view::widgets::ToastTone::Error, 4200);
+        } catch (const std::range_error& error) {
+            toast_->show("Files\nInvalid home path: " + std::string(error.what()),
+                         view::widgets::ToastTone::Error, 4200);
+        }
+    }
+
+    bool handle_file_browser_key(uint32_t key, bool long_pressed) {
+        if (long_pressed) {
+            return true;
+        }
+        if (key == LV_KEY_ESC) {
+            file_browser_active_ = false;
+            if (file_task_) {
+                file_task_->cancelled = true;
+            }
+            toast_->hide();
+            return true;
+        }
+        if (file_task_) {
+            return true;
+        }
+        if (key == LV_KEY_BACKSPACE || key == LV_KEY_DEL) {
+            const auto parent = file_directory_.parent_path();
+            if (!parent.empty() && parent != file_directory_) {
+                open_file_directory(parent);
+            }
+            return true;
+        }
+        if ((key == 'n' || key == 'N') && file_truncated_) {
+            open_file_directory(file_directory_, file_offset_ + platform::kDirectoryPageSize);
+            return true;
+        }
+        if ((key == 'p' || key == 'P') && file_offset_ >= platform::kDirectoryPageSize) {
+            open_file_directory(file_directory_, file_offset_ - platform::kDirectoryPageSize);
+            return true;
+        }
+        if (key == LV_KEY_UP || key == 'f' || key == 'z') {
+            if (file_selection_ > 0) {
+                --file_selection_;
+            }
+        }
+        else if (key == LV_KEY_DOWN || key == 'x' || key == 'c') {
+            if (file_selection_ + 1 < file_entries_.size()) {
+                ++file_selection_;
+            }
+        }
+        else if (key == LV_KEY_ENTER && !file_entries_.empty()) {
+            const auto& entry = file_entries_[file_selection_];
+            const auto path = file_directory_ / std::filesystem::u8path(entry.name);
+            if (entry.directory) {
+                open_file_directory(path);
+            } else if (file_gallery_mode_) {
+                start_gallery_image(path);
+            }
+            return true;
+        }
+        file_notice_.clear();
+        show_file_browser();
+        return true;
+    }
+
+    void start_gallery_image(const std::filesystem::path& path) {
+        if (gallery_task_) {
+            file_notice_ = "Previous image read is stopping";
+            show_file_browser();
+            return;
+        }
+        auto task = std::make_shared<GalleryQueryState>();
+        gallery_task_ = task;
+        try {
+            gallery_thread_ = std::thread([task, path] {
+                platform::GalleryImage result;
+                try {
+                    result = platform::read_gallery_image(path, &task->cancelled);
+                } catch (const std::exception& error) {
+                    result.error = std::string("Image read failed: ") + error.what();
+                }
+                std::lock_guard<std::mutex> lock(task->mutex);
+                task->result = std::move(result);
+                task->complete = true;
+            });
+        } catch (const std::system_error& error) {
+            gallery_task_.reset();
+            file_notice_ = "Could not start image read: " + error.code().message();
+            show_file_browser();
+            return;
+        }
+        gallery_loading_ = true;
+        toast_->show_persistent("Opening image...\nESC cancels");
+    }
+
+    void update_gallery_image() {
+        const auto task = gallery_task_;
+        if (!task) {
+            return;
+        }
+        {
+            std::lock_guard<std::mutex> lock(task->mutex);
+            if (!task->complete) {
+                return;
+            }
+        }
+        if (gallery_thread_.joinable()) {
+            gallery_thread_.join();
+        }
+        gallery_task_.reset();
+        if (task->cancelled || !gallery_loading_) {
+            return;
+        }
+        gallery_loading_ = false;
+        if (!task->result.error.empty()) {
+            file_notice_ = task->result.error;
+            show_file_browser();
+            return;
+        }
+        gallery_pixels_ = std::move(task->result.pixels);
+        gallery_image_ = {};
+        gallery_image_.header.magic = LV_IMAGE_HEADER_MAGIC;
+        gallery_image_.header.cf = LV_COLOR_FORMAT_ARGB8888;
+        gallery_image_.header.w = task->result.width;
+        gallery_image_.header.h = task->result.height;
+        gallery_image_.header.stride = task->result.width * 4U;
+        gallery_image_.data_size = static_cast<uint32_t>(gallery_pixels_.size());
+        gallery_image_.data = gallery_pixels_.data();
+        visual_tool_mode_ = VisualToolMode::Gallery;
+        if (!create_visual_overlay()) {
+            close_visual_tool();
+            file_notice_ = "Could not open image viewer";
+            show_file_browser();
+            return;
+        }
+        lv_obj_set_style_bg_color(overlay_, lv_color_black(), 0);
+        auto* image = lv_image_create(overlay_);
+        if (!image) {
+            close_visual_tool();
+            file_notice_ = "Could not create image viewer";
+            show_file_browser();
+            return;
+        }
+        lv_image_set_src(image, &gallery_image_);
+        const uint32_t scale = std::min({256U,
+                                         320U * 256U / task->result.width,
+                                         150U * 256U / task->result.height});
+        lv_image_set_scale(image, scale);
+        lv_obj_center(image);
+        lv_label_set_text(screen_test_label_, "ESC: back");
+        lv_obj_set_style_text_color(screen_test_label_, lv_color_white(), 0);
+        lv_obj_align(screen_test_label_, LV_ALIGN_BOTTOM_MID, 0, -2);
+        lv_obj_move_foreground(screen_test_label_);
     }
 
     void start_network_query(const std::string& host, bool dns) {
@@ -572,7 +1117,12 @@ private:
                << (device.ethernet_connected ? "yes" : "no") << "\n"
                << "Battery present: " << (device.battery_present ? "yes" : "no") << "\n"
                << "Storage detected: " << (storage.micro_sd_present ? "yes" : "no") << "\n"
-               << "Network interface count: " << interfaces.size() << "\n";
+               << "Network interface count: ";
+        if (interfaces.error.empty()) {
+            report << interfaces.interfaces.size() << "\n";
+        } else {
+            report << "unavailable (" << interfaces.error << ")\n";
+        }
         report.flush();
         if (!report) {
             toast_->show("Could not write the support report",
@@ -718,44 +1268,146 @@ private:
                          4200);
             return;
         }
+
         toast_->show(std::string("Clock format saved\n") +
                          (clock_24h ? "24-hour" : "12-hour"),
                      view::widgets::ToastTone::Success,
                      3200);
     }
 
-    void show_network_interfaces() {
-        const auto interfaces = platform::list_network_interfaces();
-        if (interfaces.empty()) {
-            toast_->show("No network interfaces found",
+    void toggle_tool_layout() {
+        const bool spacious = !view_model_.spacious_layout();
+        auto config = theme_persistence_.config;
+        config.spacious_layout = spacious;
+        std::string error;
+        if (!save_application_config(theme_persistence_.config_path, config, error)) {
+            LOG_WARN("failed to save tool layout {}: {}", theme_persistence_.config_path, error);
+            toast_->show("Could not save tool layout\n" + error,
+                         view::widgets::ToastTone::Error, 4200);
+            return;
+        }
+        theme_persistence_.config = config;
+        view_model_.set_spacious_layout(spacious);
+        toast_->show(spacious ? "Spacious tool layout" : "Compact tool layout",
+                     view::widgets::ToastTone::Success, 3200);
+    }
+
+    void show_selected_interface() {
+        const auto& item = interfaces_[interface_selection_];
+        std::string message = interfaces_ethernet_only_ ? "Host Ethernet "
+                              : USE_DESKTOP ? "Host interface " : "Interface ";
+        message += std::to_string(interface_selection_ + 1) + "/" +
+                   std::to_string(interfaces_.size());
+        message += "\n" + file_display_text(item.name, 24);
+        message += !item.state_known ? "\nState unknown"
+                   : item.connected ? "\nUp" : "\nDown";
+        if (!item.address.empty()) {
+            message += "  " + item.address;
+        }
+        message += "\nUP/DOWN select  ESC back";
+        toast_->show_persistent(message);
+    }
+
+    void show_network_interfaces(bool ethernet_only = false) {
+        auto interfaces = platform::list_network_interfaces();
+        if (!interfaces.error.empty()) {
+            toast_->show(std::string(ethernet_only ? "Ethernet\n" : "Interfaces\n") +
+                             interfaces.error,
+                         view::widgets::ToastTone::Error, 5200);
+            return;
+        }
+        if (ethernet_only) {
+            interfaces = platform::filter_ethernet_interfaces(std::move(interfaces));
+        }
+        if (interfaces.interfaces.empty()) {
+            toast_->show(ethernet_only ? "No host Ethernet adapters found"
+                                       : "No network interfaces found",
                          view::widgets::ToastTone::Warning,
                          3200);
             return;
         }
 
-        std::string message = "Interfaces";
-        const std::size_t count = std::min<std::size_t>(interfaces.size(), 4);
-        for (std::size_t index = 0; index < count; ++index) {
-            message += "\n" + interfaces[index].name +
-                       (interfaces[index].connected ? "  up" : "  down");
+        interfaces_ = std::move(interfaces.interfaces);
+        interfaces_ethernet_only_ = ethernet_only;
+        interface_selection_ = 0;
+        interfaces_active_ = true;
+        show_selected_interface();
+    }
+
+    bool handle_interface_key(uint32_t key, bool long_pressed) {
+        if (long_pressed) {
+            return true;
         }
-        toast_->show(message, view::widgets::ToastTone::Default, 5200);
+        if (key == LV_KEY_ESC || key == LV_KEY_BACKSPACE) {
+            interfaces_active_ = false;
+            interfaces_.clear();
+            toast_->hide();
+        } else if (key == LV_KEY_UP || key == LV_KEY_LEFT || key == 'f' || key == 'z') {
+            if (interface_selection_ > 0) {
+                --interface_selection_;
+            }
+            show_selected_interface();
+        } else if (key == LV_KEY_DOWN || key == LV_KEY_RIGHT || key == 'x' || key == 'c') {
+            if (interface_selection_ + 1 < interfaces_.size()) {
+                ++interface_selection_;
+            }
+            show_selected_interface();
+        }
+        return true;
+    }
+
+    void show_selected_arp_entry() {
+        const auto& item = arp_entries_[arp_selection_];
+        std::string message = USE_DESKTOP ? "Host ARP " : "ARP ";
+        message += std::to_string(arp_selection_ + 1) + "/" +
+                   std::to_string(arp_entries_.size()) + (arp_truncated_ ? "+" : "");
+        message += "\n" + file_display_text(item.address, 24) +
+                   "\n" + file_display_text(item.hardware_address, 24) +
+                   "\n" + file_display_text(item.interface_name, 24) +
+                   "\nUP/DOWN select  ESC back";
+        toast_->show_persistent(message);
     }
 
     void show_arp_table() {
-        const auto entries = platform::arp_entries();
-        if (entries.empty()) {
+        auto result = platform::arp_entries();
+        if (!result.error.empty()) {
+            toast_->show("ARP table\n" + result.error,
+                         view::widgets::ToastTone::Error, 5200);
+            return;
+        }
+        if (result.entries.empty()) {
             toast_->show("Local ARP table is empty",
                          view::widgets::ToastTone::Warning,
                          3200);
             return;
         }
-        std::string message = "Local ARP entries";
-        const std::size_t count = std::min<std::size_t>(entries.size(), 2);
-        for (std::size_t index = 0; index < count; ++index) {
-            message += "\n" + entries[index];
+        arp_entries_ = std::move(result.entries);
+        arp_truncated_ = result.truncated;
+        arp_selection_ = 0;
+        arp_active_ = true;
+        show_selected_arp_entry();
+    }
+
+    bool handle_arp_key(uint32_t key, bool long_pressed) {
+        if (long_pressed) {
+            return true;
         }
-        toast_->show(message, view::widgets::ToastTone::Default, 5200);
+        if (key == LV_KEY_ESC || key == LV_KEY_BACKSPACE) {
+            arp_active_ = false;
+            arp_entries_.clear();
+            toast_->hide();
+        } else if (key == LV_KEY_UP || key == LV_KEY_LEFT || key == 'f' || key == 'z') {
+            if (arp_selection_ > 0) {
+                --arp_selection_;
+            }
+            show_selected_arp_entry();
+        } else if (key == LV_KEY_DOWN || key == LV_KEY_RIGHT || key == 'x' || key == 'c') {
+            if (arp_selection_ + 1 < arp_entries_.size()) {
+                ++arp_selection_;
+            }
+            show_selected_arp_entry();
+        }
+        return true;
     }
 
     void show_uptime() {
@@ -790,7 +1442,7 @@ private:
             platform::local_identity_text() +
             std::string("\nWi-Fi ") + (device.wifi_connected ? "connected" : "not connected") +
             "\nEthernet " + (device.ethernet_connected ? "connected" : "not connected") +
-            "\nGateway " + gateway;
+            (USE_DESKTOP ? "\nHost gateway " : "\nGateway ") + gateway;
         toast_->show(message,
                      connected ? view::widgets::ToastTone::Default
                                : view::widgets::ToastTone::Warning,
@@ -940,6 +1592,10 @@ private:
         }
         overlay_ = nullptr;
         screen_test_label_ = nullptr;
+        if (visual_tool_mode_ == VisualToolMode::Gallery) {
+            lv_image_cache_drop(&gallery_image_);
+            gallery_pixels_.clear();
+        }
         visual_tool_mode_ = VisualToolMode::None;
     }
 
@@ -996,12 +1652,165 @@ private:
         update_screen_test();
     }
 
+    void update_ambient() {
+        static constexpr uint32_t kPalettes[][3] = {
+            {0x152B54, 0x25466A, 0x25335F},
+            {0x4A2028, 0x623720, 0x51304C},
+            {0x173E37, 0x24503C, 0x1B3B50},
+        };
+        const auto now = std::chrono::steady_clock::now();
+        if (now < ambient_next_update_) {
+            return;
+        }
+        ambient_next_update_ = now + std::chrono::milliseconds(100);
+        const auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(
+            now - ambient_started_).count();
+        constexpr int64_t kTransitionMs = 5000;
+        const int64_t phase = theme_persistence_.config.reduced_motion ? 0 : elapsed;
+        const std::size_t first = static_cast<std::size_t>((phase / kTransitionMs) % 3);
+        const std::size_t second = (first + 1) % 3;
+        const uint32_t from = kPalettes[ambient_palette_][first];
+        const uint32_t to = kPalettes[ambient_palette_][second];
+        const int64_t progress = phase % kTransitionMs;
+        uint32_t color = 0;
+        for (int shift : {16, 8, 0}) {
+            const int64_t a = (from >> shift) & 0xff;
+            const int64_t b = (to >> shift) & 0xff;
+            const auto channel = static_cast<uint32_t>(
+                (a * (kTransitionMs - progress) + b * progress) / kTransitionMs);
+            color |= channel << shift;
+        }
+        lv_obj_set_style_bg_color(overlay_, lv_color_hex(color), 0);
+    }
+
+    void show_ambient_palette() {
+        static constexpr const char* kNames[] = {"Ocean", "Sunset", "Forest"};
+        char message[96]{};
+        std::snprintf(message, sizeof(message),
+                      "AMBIENT: %s\nLEFT/RIGHT=palette  ESC=exit",
+                      kNames[ambient_palette_]);
+        lv_label_set_text(screen_test_label_, message);
+        ambient_started_ = std::chrono::steady_clock::now();
+        ambient_next_update_ = ambient_started_;
+        update_ambient();
+    }
+
+    void start_ambient() {
+        visual_tool_mode_ = VisualToolMode::Ambient;
+        ambient_palette_ = 0;
+        if (!create_visual_overlay()) {
+            visual_tool_mode_ = VisualToolMode::None;
+            toast_->show("Ambient preview could not open",
+                         view::widgets::ToastTone::Error, 3200);
+            return;
+        }
+        lv_obj_set_style_text_color(screen_test_label_, lv_color_white(), 0);
+        lv_obj_set_style_text_align(screen_test_label_, LV_TEXT_ALIGN_CENTER, 0);
+        show_ambient_palette();
+    }
+
+    bool save_screensaver_settings(bool enabled, int32_t palette) {
+        auto config = theme_persistence_.config;
+        config.screensaver_enabled = enabled;
+        config.screensaver_palette = palette;
+        std::string error;
+        if (!save_application_config(theme_persistence_.config_path, config, error)) {
+            LOG_WARN("failed to save screensaver settings {}: {}",
+                     theme_persistence_.config_path, error);
+            toast_->show("Could not save screensaver settings\n" + error,
+                         view::widgets::ToastTone::Error, 4200);
+            return false;
+        }
+        theme_persistence_.config = config;
+        view_model_.set_screensaver_enabled(enabled);
+        view_model_.set_screensaver_palette(palette);
+        lv_display_trigger_activity(nullptr);
+        return true;
+    }
+
+    void toggle_screensaver() {
+        const bool enabled = !view_model_.screensaver_enabled();
+        if (save_screensaver_settings(enabled, view_model_.screensaver_palette())) {
+            toast_->show(enabled ? "Screensaver enabled\nStarts after 1 minute"
+                                 : "Screensaver disabled",
+                         view::widgets::ToastTone::Success, 3200);
+        }
+    }
+
+    void show_screensaver_picker() {
+        static constexpr const char* kNames[] = {"Ocean", "Sunset", "Forest"};
+        toast_->show_persistent(std::string("Screensaver: ") + kNames[screensaver_selection_] +
+                                "\nLEFT/RIGHT=choose\nENTER=save  ESC=cancel");
+    }
+
+    bool handle_screensaver_picker_key(uint32_t key, bool long_pressed) {
+        if (long_pressed) {
+            return true;
+        }
+        if (key == LV_KEY_ESC) {
+            screensaver_picker_active_ = false;
+            toast_->hide();
+        }
+        else if (key == LV_KEY_ENTER) {
+            screensaver_picker_active_ = false;
+            if (save_screensaver_settings(view_model_.screensaver_enabled(),
+                                          screensaver_selection_)) {
+                toast_->show("Screensaver colors saved",
+                             view::widgets::ToastTone::Success, 3200);
+            }
+        }
+        else if (key == LV_KEY_LEFT || key == 'z' || key == LV_KEY_RIGHT || key == 'c') {
+            screensaver_selection_ = (screensaver_selection_ +
+                (key == LV_KEY_LEFT || key == 'z' ? model::kScreensaverPaletteCount - 1 : 1)) %
+                model::kScreensaverPaletteCount;
+            show_screensaver_picker();
+        }
+        return true;
+    }
+
+    void start_screensaver() {
+        visual_tool_mode_ = VisualToolMode::Screensaver;
+        ambient_palette_ = view_model_.screensaver_palette();
+        if (!create_visual_overlay()) {
+            visual_tool_mode_ = VisualToolMode::None;
+            lv_display_trigger_activity(nullptr);
+            toast_->show("Screensaver could not open",
+                         view::widgets::ToastTone::Error, 3200);
+            return;
+        }
+        lv_obj_add_flag(overlay_, LV_OBJ_FLAG_CLICKABLE);
+        lv_obj_add_event_cb(overlay_, screensaver_pressed, LV_EVENT_PRESSED, this);
+        lv_label_set_text(screen_test_label_, "Press any key to wake");
+        lv_obj_set_style_text_color(screen_test_label_, lv_color_white(), 0);
+        ambient_started_ = std::chrono::steady_clock::now();
+        ambient_next_update_ = ambient_started_;
+        update_ambient();
+    }
+
+    static void screensaver_pressed(lv_event_t* event) {
+        auto* controller = static_cast<ShortcutController*>(lv_event_get_user_data(event));
+        if (controller && controller->visual_tool_mode_ == VisualToolMode::Screensaver) {
+            controller->close_visual_tool();
+            lv_display_trigger_activity(nullptr);
+        }
+    }
+
     bool handle_visual_tool_key(uint32_t key, bool long_pressed) {
         if (long_pressed) {
             return true;
         }
-        if (visual_tool_mode_ == VisualToolMode::Flashlight || key == LV_KEY_ESC) {
+        if (visual_tool_mode_ == VisualToolMode::Screensaver ||
+            visual_tool_mode_ == VisualToolMode::Flashlight || key == LV_KEY_ESC) {
             close_visual_tool();
+            lv_display_trigger_activity(nullptr);
+            return true;
+        }
+        if (visual_tool_mode_ == VisualToolMode::Ambient) {
+            if (key == LV_KEY_LEFT || key == 'z' || key == LV_KEY_RIGHT || key == 'c') {
+                ambient_palette_ = (ambient_palette_ +
+                    (key == LV_KEY_LEFT || key == 'z' ? 2 : 1)) % 3;
+                show_ambient_palette();
+            }
             return true;
         }
         screen_test_index_ = (screen_test_index_ + 1) % 7;
@@ -1129,6 +1938,36 @@ private:
     }
 
     bool handle_key(uint32_t key, bool long_pressed) {
+        if (gallery_loading_) {
+            if (!long_pressed && key == LV_KEY_ESC) {
+                gallery_task_->cancelled = true;
+                gallery_loading_ = false;
+                show_file_browser();
+            }
+            return true;
+        }
+        if (visual_tool_mode_ == VisualToolMode::Gallery) {
+            if (!long_pressed && key == LV_KEY_ESC) {
+                close_visual_tool();
+                show_file_browser();
+            }
+            return true;
+        }
+        if (file_browser_active_) {
+            return handle_file_browser_key(key, long_pressed);
+        }
+        if (interfaces_active_) {
+            return handle_interface_key(key, long_pressed);
+        }
+        if (arp_active_) {
+            return handle_arp_key(key, long_pressed);
+        }
+        if (screensaver_picker_active_) {
+            return handle_screensaver_picker_key(key, long_pressed);
+        }
+        if (gatt_stage_ != GattStage::None && key != platform::kKeyPrintScreen) {
+            return handle_gatt_key(key, long_pressed);
+        }
         if (theme_picker_active_) {
             return handle_theme_picker_key(key, long_pressed);
         }
@@ -1225,7 +2064,7 @@ private:
                     if (view_model_.current_page() == model::AppPage::Tools) {
                         switch (view_model_.tool_selection()) {
                             case 0:
-                                show_file_summary();
+                                start_file_browser();
                                 break;
                             case 1:
                                 start_text_tool(TextToolMode::Calculator);
@@ -1269,9 +2108,19 @@ private:
                                 start_theme_picker();
                                 break;
                             case 12:
+                                start_ambient();
+                                break;
                             case 13:
+                                toggle_tool_layout();
+                                break;
                             case 14:
+                                toggle_screensaver();
+                                break;
                             case 15:
+                                screensaver_selection_ = view_model_.screensaver_palette();
+                                screensaver_picker_active_ = true;
+                                show_screensaver_picker();
+                                break;
                             case 16:
                                 show_feature_status(platform::tools_features(),
                                                    view_model_.tool_selection());
@@ -1298,8 +2147,11 @@ private:
                                 break;
                             case 1: {
                                 const std::string gateway = platform::default_gateway();
-                                toast_->show("Default gateway\n" + gateway,
-                                             gateway == "No gateway"
+                                toast_->show(std::string(USE_DESKTOP ? "Host gateway\n"
+                                                                    : "Default gateway\n") + gateway,
+                                             gateway == "No gateway" ||
+                                                     gateway.find("Route table") == 0 ||
+                                                     gateway == "Gateway data invalid"
                                                  ? view::widgets::ToastTone::Warning
                                                  : view::widgets::ToastTone::Default,
                                              4200);
@@ -1316,7 +2168,11 @@ private:
                                                     view_model_.tool_selection());
                                 break;
                             case 5:
-                                show_system_status(3);
+                                if (USE_DESKTOP) {
+                                    show_network_interfaces(true);
+                                } else {
+                                    show_system_status(3);
+                                }
                                 break;
                             case 6:
                                 show_arp_table();
@@ -1341,6 +2197,9 @@ private:
                             case 2:
                                 show_system_status(2);
                                 break;
+                            case 3:
+                                start_gatt_scan();
+                                break;
                             default:
                                 show_feature_status(platform::wireless_features(),
                                                     view_model_.tool_selection());
@@ -1359,8 +2218,12 @@ private:
                         return true;
                     }
                     if (view_model_.current_page() == model::AppPage::Media) {
-                        show_feature_status(platform::media_features(),
-                                            view_model_.tool_selection());
+                        if (view_model_.tool_selection() == 7) {
+                            start_file_browser(true);
+                        } else {
+                            show_feature_status(platform::media_features(),
+                                                view_model_.tool_selection());
+                        }
                         return true;
                     }
                     toast_->show("This action is not implemented yet",
@@ -1476,8 +2339,39 @@ private:
     std::unique_ptr<view::widgets::HelpPopup> help_popup_;
     std::string text_tool_buffer_;
     TextToolMode text_tool_mode_{TextToolMode::None};
+    bool file_browser_active_{false};
+    bool file_gallery_mode_{false};
+    std::filesystem::path file_directory_;
+    std::vector<platform::FileEntry> file_entries_;
+    std::size_t file_selection_{0};
+    std::size_t file_offset_{0};
+    bool file_truncated_{false};
+    std::string file_notice_;
+    std::shared_ptr<FileQueryState> file_task_;
+    std::thread file_thread_;
+    bool gallery_loading_{false};
+    std::shared_ptr<GalleryQueryState> gallery_task_;
+    std::thread gallery_thread_;
+    std::vector<uint8_t> gallery_pixels_;
+    lv_image_dsc_t gallery_image_{};
     std::shared_ptr<NetworkQueryState> network_query_;
     std::thread network_thread_;
+    bool interfaces_active_{false};
+    bool interfaces_ethernet_only_{false};
+    std::vector<platform::NetworkInterface> interfaces_;
+    std::size_t interface_selection_{0};
+    bool arp_active_{false};
+    bool arp_truncated_{false};
+    std::vector<platform::ArpEntry> arp_entries_;
+    std::size_t arp_selection_{0};
+    std::shared_ptr<GattTask> gatt_task_;
+    std::thread gatt_thread_;
+    GattStage gatt_stage_{GattStage::None};
+    std::vector<platform::BluetoothDevice> gatt_devices_;
+    std::vector<platform::GattEntry> gatt_entries_;
+    std::size_t gatt_device_index_{0};
+    std::size_t gatt_entry_index_{0};
+    std::string gatt_error_;
     std::chrono::steady_clock::time_point stopwatch_started_{};
     std::chrono::steady_clock::duration stopwatch_elapsed_{};
     bool stopwatch_running_{false};
@@ -1494,6 +2388,11 @@ private:
     lv_obj_t* overlay_{nullptr};
     lv_obj_t* screen_test_label_{nullptr};
     int32_t screen_test_index_{0};
+    int32_t ambient_palette_{0};
+    std::chrono::steady_clock::time_point ambient_started_{};
+    std::chrono::steady_clock::time_point ambient_next_update_{};
+    bool screensaver_picker_active_{false};
+    int32_t screensaver_selection_{0};
     bool theme_picker_active_{false};
     int32_t theme_selection_{0};
     int32_t original_theme_selection_{0};
@@ -1565,6 +2464,9 @@ int Application::run() {
             view_model.set_dark_mode(config.dark_mode);
         }
         view_model.set_clock_24h(config.clock_24h);
+        view_model.set_spacious_layout(config.spacious_layout);
+        view_model.set_screensaver_enabled(config.screensaver_enabled);
+        view_model.set_screensaver_palette(config.screensaver_palette);
         LOG_INFO("loaded config: {} (theme={})",
                  loaded_config_path,
                  view::theme_name(view_model.theme_id()));

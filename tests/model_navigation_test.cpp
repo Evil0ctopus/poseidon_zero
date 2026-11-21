@@ -4,6 +4,22 @@
 
 int main() {
     model::BaseModel model;
+    if (model.screensaver_due(model::kScreensaverIdleMs)) {
+        std::cerr << "Screensaver should be disabled by default\n";
+        return 1;
+    }
+    model.set_screensaver_enabled(true);
+    if (model.screensaver_due(model::kScreensaverIdleMs - 1) ||
+        !model.screensaver_due(model::kScreensaverIdleMs)) {
+        std::cerr << "Screensaver should start only after the inactivity threshold\n";
+        return 1;
+    }
+    model.set_screensaver_palette(2);
+    model.set_screensaver_palette(model::kScreensaverPaletteCount);
+    if (model.screensaver_palette() != 2) {
+        std::cerr << "Invalid screensaver palettes should not replace the selection\n";
+        return 1;
+    }
     model.set_tool_selection(7);
     if (model.tool_selection() != 7) {
         std::cerr << "Tool selection should reach the last grid item\n";

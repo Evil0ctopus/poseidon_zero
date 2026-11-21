@@ -47,6 +47,36 @@ void BaseModel::set_clock_24h(bool enabled) {
     clock_24h_ = enabled;
 }
 
+bool BaseModel::spacious_layout() const {
+    return spacious_layout_;
+}
+
+void BaseModel::set_spacious_layout(bool enabled) {
+    spacious_layout_ = enabled;
+}
+
+bool BaseModel::screensaver_enabled() const {
+    return screensaver_enabled_;
+}
+
+void BaseModel::set_screensaver_enabled(bool enabled) {
+    screensaver_enabled_ = enabled;
+}
+
+int32_t BaseModel::screensaver_palette() const {
+    return screensaver_palette_;
+}
+
+void BaseModel::set_screensaver_palette(int32_t palette) {
+    if (palette >= 0 && palette < kScreensaverPaletteCount) {
+        screensaver_palette_ = palette;
+    }
+}
+
+bool BaseModel::screensaver_due(uint32_t inactive_ms) const {
+    return screensaver_enabled_ && inactive_ms >= kScreensaverIdleMs;
+}
+
 AppPage BaseModel::current_page() const {
     return current_page_;
 }

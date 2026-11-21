@@ -13,6 +13,8 @@ namespace model {
 inline constexpr int32_t kStandardToolItemCount = 8;
 inline constexpr int32_t kSystemToolItemCount = 10;
 inline constexpr int32_t kToolsPageItemCount = 17;
+inline constexpr int32_t kScreensaverPaletteCount = 3;
+inline constexpr uint32_t kScreensaverIdleMs = 60000;
 
 enum class ThemeId : int32_t {
     Poseidon = 0,
@@ -54,6 +56,13 @@ public:
     void set_theme_id(ThemeId id);
     bool clock_24h() const;
     void set_clock_24h(bool enabled);
+    bool spacious_layout() const;
+    void set_spacious_layout(bool enabled);
+    bool screensaver_enabled() const;
+    void set_screensaver_enabled(bool enabled);
+    int32_t screensaver_palette() const;
+    void set_screensaver_palette(int32_t palette);
+    bool screensaver_due(uint32_t inactive_ms) const;
 
     AppPage current_page() const;
     void set_current_page(AppPage page);
@@ -69,6 +78,9 @@ public:
 private:
     ThemeId theme_id_ = ThemeId::ZeroLight;
     bool clock_24h_{true};
+    bool spacious_layout_{false};
+    bool screensaver_enabled_{false};
+    int32_t screensaver_palette_{0};
     AppPage current_page_ = AppPage::Apple;
     int32_t menu_selection_ = 0;
     int32_t tool_selection_ = 0;

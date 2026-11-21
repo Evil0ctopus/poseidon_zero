@@ -148,6 +148,9 @@ if(USE_DESKTOP)
 else()
     message(STATUS "Configuring CM0/aarch64 Linux build")
 
+    find_package(PkgConfig REQUIRED)
+    pkg_check_modules(CM0_GIO REQUIRED IMPORTED_TARGET gio-2.0)
+
     if(NOT CM0_SDK_ROOT OR NOT EXISTS "${CM0_SDK_ROOT}")
         message(FATAL_ERROR
             "CM0 SDK sysroot not found or invalid.\n"
@@ -427,6 +430,12 @@ target_link_libraries(${PROJECT_NAME}_platform
     PUBLIC
         lvgl
 )
+if(USE_DESKTOP AND WIN32)
+    target_link_libraries(${PROJECT_NAME}_platform PUBLIC iphlpapi ws2_32)
+endif()
+if(NOT USE_DESKTOP)
+    target_link_libraries(${PROJECT_NAME}_platform PUBLIC PkgConfig::CM0_GIO)
+endif()
 
 # ====================================================
 # Model sources
@@ -633,15 +642,50 @@ target_link_libraries(${PROJECT_NAME}
 include(cmake/cm0-package.cmake)
 
 include(CTest)
+if(NOT USE_DESKTOP AND BUILD_TESTING)
+    add_executable(poseidon_bluetooth_gatt_bluez_tests
+        tests/bluetooth_gatt_bluez_test.cpp
+        src/platform/bluetooth_gatt.cpp
+    )
+    target_include_directories(poseidon_bluetooth_gatt_bluez_tests
+        PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/src/platform"
+    )
+    target_compile_definitions(poseidon_bluetooth_gatt_bluez_tests PRIVATE USE_DESKTOP=0)
+    target_link_libraries(poseidon_bluetooth_gatt_bluez_tests PRIVATE PkgConfig::CM0_GIO)
+    add_test(NAME bluetooth-gatt-bluez COMMAND poseidon_bluetooth_gatt_bluez_tests)
+endif()
 if(USE_DESKTOP AND BUILD_TESTING)
+    add_executable(poseidon_bluetooth_gatt_desktop_tests
+        tests/bluetooth_gatt_desktop_test.cpp
+        src/platform/bluetooth_gatt.cpp
+    )
+    target_include_directories(poseidon_bluetooth_gatt_desktop_tests
+        PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/src/platform"
+    )
+    target_compile_definitions(poseidon_bluetooth_gatt_desktop_tests PRIVATE USE_DESKTOP=1)
+    add_test(NAME bluetooth-gatt-desktop COMMAND poseidon_bluetooth_gatt_desktop_tests)
+
+    add_executable(poseidon_key_routing_tests tests/key_routing_test.cpp)
+    target_link_libraries(poseidon_key_routing_tests PRIVATE ${PROJECT_NAME}_platform)
+    add_test(NAME key-routing COMMAND poseidon_key_routing_tests)
+
     add_executable(poseidon_safe_tools_tests
         tests/safe_tools_test.cpp
+        src/platform/gallery_image.cpp
+        src/platform/gallery_jpeg.c
+        src/platform/linux_network.cpp
         src/platform/safe_tools.cpp
+        src/platform/tool_status.cpp
     )
     target_include_directories(poseidon_safe_tools_tests
         PRIVATE
             "${CMAKE_CURRENT_SOURCE_DIR}/src/platform"
     )
+    target_link_libraries(poseidon_safe_tools_tests PRIVATE PNG::PNG ${JPEG_TARGET})
+    if(WIN32)
+        target_link_libraries(poseidon_safe_tools_tests PRIVATE iphlpapi ws2_32)
+    endif()
+    target_compile_definitions(poseidon_safe_tools_tests PRIVATE USE_DESKTOP=1)
     add_test(NAME safe-tools COMMAND poseidon_safe_tools_tests)
 
     add_executable(poseidon_model_navigation_tests
