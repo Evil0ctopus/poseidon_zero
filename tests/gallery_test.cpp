@@ -1,19 +1,43 @@
 #include "gallery.h"
 
 #include <png.h>
-#include <unistd.h>
 
+#include <chrono>
 #include <filesystem>
 #include <fstream>
 #include <iostream>
+#include <string>
 #include <vector>
 
 namespace fs = std::filesystem;
 
 int main() {
-    char directory[] = "/tmp/poseidon-gallery-XXXXXX";
-    if (!mkdtemp(directory)) return 1;
-    const fs::path root(directory);
+    std::error_code ec;
+    const auto temp_directory = fs::temp_directory_path(ec);
+    if (ec) {
+        std::cerr << "Cannot locate temporary directory: " << ec.message() << '\n';
+        return 1;
+    }
+    fs::path root;
+    for (unsigned attempt = 0; attempt < 100; ++attempt) {
+        const auto candidate =
+            temp_directory /
+            ("poseidon-gallery-" +
+             std::to_string(std::chrono::steady_clock::now().time_since_epoch().count()) +
+             "-" + std::to_string(attempt));
+        if (fs::create_directory(candidate, ec)) {
+            root = candidate;
+            break;
+        }
+        if (ec) {
+            std::cerr << "Cannot create test directory: " << ec.message() << '\n';
+            return 1;
+        }
+    }
+    if (root.empty()) {
+        std::cerr << "Cannot create unique test directory\n";
+        return 1;
+    }
     auto cleanup = [&] {
         fs::remove(root / "a.png");
         fs::remove(root / "b.PNG");
@@ -37,7 +61,8 @@ int main() {
         pixels[i] = 255;
         pixels[i + 3] = 255;
     }
-    if (!png_image_write_to_file(&png, (root / "b.PNG").c_str(), 0, pixels.data(), 0, nullptr))
+    if (!png_image_write_to_file(&png, (root / "b.PNG").string().c_str(), 0, pixels.data(), 0,
+                                 nullptr))
         return fail("Cannot create test PNG");
     fs::copy_file(root / "b.PNG", root / "a.png");
     std::ofstream(root / "ignored.txt") << "ignored";
@@ -59,7 +84,8 @@ int main() {
     png.width = 1025;
     png.height = 1;
     pixels.assign(1025 * 4, 255);
-    if (!png_image_write_to_file(&png, (root / "big.png").c_str(), 0, pixels.data(), 0, nullptr))
+    if (!png_image_write_to_file(&png, (root / "big.png").string().c_str(), 0, pixels.data(), 0,
+                                 nullptr))
         return fail("Cannot create oversized test PNG");
     if (platform::load_gallery_image(root / "big.png", image, error) || error.empty())
         return fail("Oversized PNG must fail");
