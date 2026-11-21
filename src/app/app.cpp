@@ -571,7 +571,9 @@ private:
                 }
                 ++characters;
             }
-            result += character < 0x20 || character == 0x7f ? '?' : static_cast<char>(character);
+            result += character < 0x20 || character == 0x7f || character == '#'
+                          ? '?'
+                          : static_cast<char>(character);
         }
         return result;
     }
@@ -689,10 +691,14 @@ private:
     }
 
     void start_file_browser(bool gallery = false) {
+#if USE_DESKTOP && defined(_WIN32)
+        const wchar_t* home = _wgetenv(L"HOME");
+#else
         const char* home = std::getenv("HOME");
+#endif
 #if USE_DESKTOP && defined(_WIN32)
         if (!home || home[0] == '\0') {
-            home = std::getenv("USERPROFILE");
+            home = _wgetenv(L"USERPROFILE");
         }
 #endif
         if (!home || home[0] == '\0') {
@@ -702,7 +708,11 @@ private:
         }
         try {
             file_gallery_mode_ = gallery;
+#if USE_DESKTOP && defined(_WIN32)
+            open_file_directory(std::filesystem::path(home));
+#else
             open_file_directory(std::filesystem::u8path(home));
+#endif
         } catch (const std::filesystem::filesystem_error& error) {
             toast_->show("Files\nInvalid home path: " + std::string(error.what()),
                          view::widgets::ToastTone::Error, 4200);

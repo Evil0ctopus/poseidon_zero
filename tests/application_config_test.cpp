@@ -140,16 +140,17 @@ int main() {
         std::ofstream output(temporary.path, std::ios::trunc);
         output << "[application]\nclock_24h=maybe\n";
     }
+    if (app::load_application_config(temporary.path.string(), loaded, error)) {
+        std::cerr << "Invalid clock format settings should be rejected\n";
+        return 1;
+    }
+
     {
         std::ofstream output(temporary.path, std::ios::trunc);
         output << "[application]\nspacious_layout=maybe\n";
     }
     if (app::load_application_config(temporary.path.string(), loaded, error)) {
         std::cerr << "Invalid tool layout settings should be rejected\n";
-        return 1;
-    }
-    if (app::load_application_config(temporary.path.string(), loaded, error)) {
-        std::cerr << "Invalid clock format settings should be rejected\n";
         return 1;
     }
 
