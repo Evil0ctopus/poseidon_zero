@@ -126,14 +126,11 @@ ToolFeatureList tools_features() {
         {"Dice / 8-ball", "Roll dice, flip a coin, or get a local random answer", FeatureRisk::Safe, true},
         {"Screen test", "Cycle local display colors", FeatureRisk::Safe, true},
         {"Themes", "Preview and choose a saved display palette", FeatureRisk::Safe, true},
-        {"Ambient preview", "Preview slowly changing display colors", FeatureRisk::Safe, true},
-        {"Layout toggle", "Switch between compact and spacious tool lists", FeatureRisk::Safe, true},
+        {"Ambient preview", "Preview slowly changing current-theme colors", FeatureRisk::Safe, true},
+        {"Layout toggle", "Switch between compact, spacious, and two-column layouts", FeatureRisk::Safe, true},
         {"Screensaver toggle", "Enable or disable the inactivity screensaver", FeatureRisk::Safe, true},
-        {"Screensaver picker", "Choose the screensaver colors", FeatureRisk::Safe, true},
-        {"Sound settings",
-         "Disabled placeholder; sound profiles and volume controls are not implemented",
-         FeatureRisk::Safe,
-         false},
+        {"Screensaver picker", "Choose a color palette, theme colors, or moving clock", FeatureRisk::Safe, true},
+        {"Sound settings", "Mute UI sounds or adjust their volume", FeatureRisk::Safe, true},
     }};
 }
 
@@ -145,7 +142,7 @@ FeatureList media_features() {
         {"Piano", "Unavailable; no instrument workflow is configured", FeatureRisk::Safe, false},
         {"Album art", "Unavailable; no local music metadata workflow is configured", FeatureRisk::Safe, false},
         {"Microphone", "Unavailable; no audio capture workflow is configured", FeatureRisk::Safe, false},
-        {"Speaker", "Unavailable; no audio playback workflow is configured", FeatureRisk::Safe, false},
+        {"Speaker", "Play a short speaker test sound", FeatureRisk::Safe, true},
         {"Gallery", "Browse and view local PNG and JPEG images", FeatureRisk::Safe, true},
     }};
 }

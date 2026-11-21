@@ -30,6 +30,7 @@ uint32_t pressed_key = 0;
 uint32_t press_started_at = 0;
 bool long_press_sent = false;
 bool pressed_key_consumed = false;
+bool released_key_consumed = false;
 lv_timer_t* long_press_timer = nullptr;
 KeyReleaseListener key_release_listener = nullptr;
 void* key_release_listener_user_data = nullptr;
@@ -130,6 +131,7 @@ bool route_key_state(uint32_t key, bool pressed) {
     bool consumed = pressed_key == key && pressed_key_consumed;
     const bool new_hold = pressed && (!last_key_pressed || pressed_key != key);
     if (new_hold) {
+        released_key_consumed = false;
         pressed_key = key;
         press_started_at = lv_tick_get();
         long_press_sent = false;
@@ -141,6 +143,7 @@ bool route_key_state(uint32_t key, bool pressed) {
         }
     }
     else if (!pressed && last_key_pressed && pressed_key == key) {
+        released_key_consumed = pressed_key_consumed;
         if (key_release_listener) {
             key_release_listener(key, describe_key(key), key_release_listener_user_data);
         }
@@ -154,6 +157,15 @@ bool route_key_state(uint32_t key, bool pressed) {
     last_key = key;
     last_key_pressed = pressed;
     return consumed;
+}
+
+void suppress_consumed_key_event(lv_event_t* event) {
+    const auto code = lv_event_get_code(event);
+    if ((pressed_key_consumed || released_key_consumed) &&
+        (code == LV_EVENT_PRESSED || code == LV_EVENT_SHORT_CLICKED ||
+         code == LV_EVENT_CLICKED || code == LV_EVENT_RELEASED)) {
+        lv_indev_stop_processing(lv_indev_active());
+    }
 }
 
 void key_event_cb(lv_event_t* event) {
@@ -466,6 +478,7 @@ void attach_key_router(lv_indev_t* indev) {
     }
 
     lv_indev_add_event_cb(indev, key_event_cb, LV_EVENT_KEY, nullptr);
+    lv_indev_add_event_cb(indev, suppress_consumed_key_event, LV_EVENT_ALL, nullptr);
 }
 
 void set_nav_shortcut_mode(bool enabled) {

@@ -183,6 +183,7 @@ Current dependencies info:
 | Dependency | Version | Source | Notes |
 | --- | --- | --- | --- |
 | LVGL | `v9.5.0` | `CMakeLists.txt` FetchContent | Main GUI framework. |
+| miniaudio | `0.11.21` | `CMakeLists.txt` FetchContent | UI sound playback. |
 | fmt | `12.1.0` | System package manager or `vcpkg.json` override | Logging and formatted strings. |
 | libpng | `1.6.48` | System package manager or `vcpkg.json` override | PNG image decoding support for LVGL. |
 | libjpeg-turbo | `3.1.3` | System package manager or `vcpkg.json` override | JPEG image decoding support for LVGL. |
@@ -507,13 +508,25 @@ between dice, coin, and 8-ball with `UP`/`DOWN` (or `M`), rolls with `ENTER`, an
 Ocean, Sunset, or Forest, and `ESC` to exit. If `reduced_motion` is enabled in the configuration,
 the preview stays still.
 **Screensaver toggle** enables or disables an idle screensaver, initially disabled. It starts
-after one minute without input when no interactive tool or message is open; press any key or
-tap the display to wake. **Screensaver picker** selects Ocean, Sunset, or Forest with
-`LEFT`/`RIGHT` or `Z`/`C`; press `ENTER` to save or `ESC` to cancel. Both settings persist.
+after two minutes without input when no interactive tool or message is open; press any key or
+tap the display to wake. **Screensaver picker** selects theme colors, a moving clock, Ocean,
+Sunset, or Forest; press `ENTER` to save or `ESC` to cancel. Both settings persist.
 **System → Clock format** toggles the title-bar and tool clocks between 12-hour and 24-hour time.
 **Themes** previews the full palette list with `UP`/`DOWN`; press `ENTER` to save or `ESC` to
-restore the prior theme. Alternate layout and sound settings remain
-visible as `[OFF]` entries because those Zero implementations are not available.
+restore the prior theme. **Layout toggle** cycles through compact list, spacious list, and a
+two-column grid; the choice is saved. In grid mode, `UP`/`DOWN` move between rows and
+`LEFT`/`RIGHT` move between columns.
+**Sound settings** controls app UI sounds independently of system volume. Sounds default to muted;
+use `M` to mute or unmute, arrow keys to adjust volume, `ENTER` to save, or `ESC` to cancel.
+**Media → Speaker** requests a short click at 50% app volume even when UI sounds are muted;
+listen for it and check the system volume if needed. Playback errors are shown in the app.
+**Media → Gallery** browses local directories and opens PNG and JPEG images. Use `ENTER` to view,
+`ESC` to return to the listing, and `LEFT`/`RIGHT` or `Z`/`C` to browse while viewing. Images are
+limited to 1024 × 1024 pixels and 8 MiB each.
+In the desktop simulator, **Expansion → [SIM] USB keyboard** simulates connection and US-layout
+keyboard reports: press `ENTER` to connect, type text, press `ENTER` to review, then `ENTER` to
+confirm. `ESC` cancels or disconnects. No USB input is sent to any computer. The physical-device
+USB keyboard and NFC workflows remain unavailable until their hardware interfaces are verified.
 **Network → Diagnostics** saves a sanitized support report in the home folder. **System** exposes
 memory, Wi-Fi, Bluetooth, Ethernet, storage, battery, clock, and
 brightness. **Network** shows local interface and gateway status, allows one manually entered ping

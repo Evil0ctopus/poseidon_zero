@@ -39,9 +39,13 @@ int main() {
     config.theme_id_set = true;
     config.clock_24h = false;
     config.spacious_layout = true;
+    config.grid_layout = true;
+    config.screensaver_enabled = true;
+    config.screensaver_style = 4;
+    config.sound_enabled = true;
+    config.sound_volume = 70;
     config.large_text = true;
     config.reduced_motion = true;
-    config.screensaver_enabled = true;
     config.screensaver_palette = 2;
 
     std::string error;
@@ -55,6 +59,10 @@ int main() {
         !loaded.theme_id_set || loaded.theme_id != config.theme_id ||
         loaded.dark_mode != config.dark_mode || loaded.clock_24h != config.clock_24h ||
         loaded.spacious_layout != config.spacious_layout ||
+        loaded.grid_layout != config.grid_layout ||
+        loaded.screensaver_enabled != config.screensaver_enabled ||
+        loaded.screensaver_style != config.screensaver_style ||
+        loaded.sound_enabled != config.sound_enabled || loaded.sound_volume != config.sound_volume ||
         loaded.large_text != config.large_text ||
         loaded.reduced_motion != config.reduced_motion ||
         loaded.screensaver_enabled != config.screensaver_enabled ||
@@ -81,8 +89,17 @@ int main() {
         std::cerr << "Legacy configs should use the compact tool layout\n";
         return 1;
     }
-    if (legacy.screensaver_enabled || legacy.screensaver_palette != 0) {
+    if (legacy.grid_layout) {
+        std::cerr << "Configs without grid_layout should default to list layout\n";
+        return 1;
+    }
+    if (legacy.screensaver_enabled || legacy.screensaver_palette != 0 ||
+        legacy.screensaver_style != 2) {
         std::cerr << "Legacy configs should default to a disabled screensaver\n";
+        return 1;
+    }
+    if (legacy.sound_enabled || legacy.sound_volume != 50) {
+        std::cerr << "Legacy configs should default to muted UI sounds\n";
         return 1;
     }
 
@@ -96,7 +113,8 @@ int main() {
     }
     app::ApplicationConfig sectioned;
     if (!app::load_application_config(temporary.path.string(), sectioned, error) ||
-        !sectioned.spacious_layout || sectioned.screensaver_palette != 2) {
+        !sectioned.spacious_layout || !sectioned.grid_layout ||
+        sectioned.screensaver_palette != 2 || sectioned.screensaver_style != 4) {
         std::cerr << "Settings must stay in the application section\n";
         return 1;
     }
@@ -151,6 +169,41 @@ int main() {
     }
     if (app::load_application_config(temporary.path.string(), loaded, error)) {
         std::cerr << "Invalid tool layout settings should be rejected\n";
+        return 1;
+    }
+
+    {
+        std::ofstream output(temporary.path, std::ios::trunc);
+        output << "[application]\ngrid_layout=maybe\n";
+    }
+    if (app::load_application_config(temporary.path.string(), loaded, error)) {
+        std::cerr << "Invalid layout settings should be rejected\n";
+        return 1;
+    }
+
+    {
+        std::ofstream output(temporary.path, std::ios::trunc);
+        output << "[application]\nscreensaver_style=5\n";
+    }
+    if (app::load_application_config(temporary.path.string(), loaded, error)) {
+        std::cerr << "Invalid screensaver styles should be rejected\n";
+        return 1;
+    }
+    {
+        std::ofstream output(temporary.path, std::ios::trunc);
+        output << "[application]\nscreensaver_enabled=maybe\n";
+    }
+    if (app::load_application_config(temporary.path.string(), loaded, error)) {
+        std::cerr << "Invalid screensaver settings should be rejected\n";
+        return 1;
+    }
+
+    {
+        std::ofstream output(temporary.path, std::ios::trunc);
+        output << "[application]\nsound_volume=101\n";
+    }
+    if (app::load_application_config(temporary.path.string(), loaded, error)) {
+        std::cerr << "Out-of-range sound volume should be rejected\n";
         return 1;
     }
 

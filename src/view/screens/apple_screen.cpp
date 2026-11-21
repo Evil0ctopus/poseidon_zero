@@ -59,13 +59,6 @@ void cleanup_menu_selection(lv_event_t* event) {
     delete static_cast<MenuSelectionBinding*>(lv_event_get_user_data(event));
 }
 
-void detach_menu_selection(lv_event_t* event) {
-    auto* binding = static_cast<MenuSelectionBinding*>(lv_event_get_user_data(event));
-    if (binding) {
-        binding->tabview = nullptr;
-    }
-}
-
 void open_category(viewmodel::BaseViewModel* view_model, uint32_t index) {
     if (!view_model || index >= kCategoryCount) {
         return;
@@ -391,19 +384,15 @@ void AppleScreen::build_content(lv_obj_t* content) {
                         tabview_value_changed,
                         LV_EVENT_VALUE_CHANGED,
                         binding);
-    lv_obj_add_event_cb(tabview,
-                        detach_menu_selection,
-                        LV_EVENT_DELETE,
-                        binding);
-    lv_obj_add_event_cb(content, cleanup_menu_selection, LV_EVENT_DELETE, binding);
     lv_subject_add_observer_obj(view_model().menu_selection_subject(),
                                 menu_selection_observer,
-                                content,
+                                tabview,
                                 binding);
     lv_subject_add_observer_obj(view_model().theme_id_subject(),
                                 menu_theme_observer,
-                                content,
+                                tabview,
                                 binding);
+    lv_obj_add_event_cb(tabview, cleanup_menu_selection, LV_EVENT_DELETE, binding);
 }
 
 } // namespace screen

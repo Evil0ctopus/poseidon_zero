@@ -77,6 +77,14 @@ bool BaseModel::screensaver_due(uint32_t inactive_ms) const {
     return screensaver_enabled_ && inactive_ms >= kScreensaverIdleMs;
 }
 
+bool BaseModel::grid_layout() const {
+    return grid_layout_;
+}
+
+void BaseModel::set_grid_layout(bool enabled) {
+    grid_layout_ = enabled;
+}
+
 AppPage BaseModel::current_page() const {
     return current_page_;
 }
