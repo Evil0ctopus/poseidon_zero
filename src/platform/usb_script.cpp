@@ -59,17 +59,15 @@ bool key_usage(const std::string& token, uint8_t& usage, uint8_t& modifiers) {
         }
     }
     const std::string name = upper(token);
-    if (name.size() == 2 || name.size() == 3) {
-        if (name[0] == 'F') {
-            int number = 0;
-            const char* first = name.data() + 1;
-            const char* last = name.data() + name.size();
-            const auto result = std::from_chars(first, last, number);
-            if (result.ec == std::errc{} && result.ptr == last &&
-                number >= 1 && number <= 12) {
-                usage = static_cast<uint8_t>(57 + number);
-                return true;
-            }
+    if (name.size() >= 2 && name.size() <= 3 && name[0] == 'F') {
+        const std::string number = name.substr(1);
+        int parsed = 0;
+        const auto result = std::from_chars(number.data(), number.data() + number.size(), parsed);
+        if (result.ec == std::errc{} && result.ptr == number.data() + number.size() &&
+            parsed >= 1 && parsed <= 12 &&
+            number == std::to_string(parsed)) {
+            usage = static_cast<uint8_t>(57 + parsed);
+            return true;
         }
     }
     return false;

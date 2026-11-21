@@ -37,7 +37,7 @@ int main() {
 
     for (const char* bad : {"", "BOGUS", "DELAY -1", "DELAY 60001",
                             "DELAY 1.5", "DELAY 1oops", "DELAY 500 ENTER",
-                            "F1garbage", "F12.5", "F0", "F13", "STRING",
+                            "F1garbage", "F12.5", "F01", "F0", "F13", "STRING",
                             "GUI bogus"}) {
         if (platform::parse_usb_script(bad, steps, error) || !steps.empty() || error.empty()) {
             std::cerr << "Invalid script must fail: " << bad << "\n";
