@@ -678,6 +678,16 @@ if(USE_DESKTOP AND BUILD_TESTING)
     )
     add_test(NAME usb-keyboard-simulator COMMAND poseidon_usb_keyboard_simulator_tests)
 
+    add_executable(poseidon_usb_script_tests
+        tests/usb_script_test.cpp
+        src/platform/usb_script.cpp
+        src/platform/usb_keyboard_simulator.cpp
+    )
+    target_include_directories(poseidon_usb_script_tests
+        PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/src/platform"
+    )
+    add_test(NAME usb-script COMMAND poseidon_usb_script_tests)
+
     add_executable(poseidon_safe_tools_tests
         tests/safe_tools_test.cpp
         src/platform/safe_tools.cpp
