@@ -1,19 +1,23 @@
 #include "gallery.h"
 
 #include <png.h>
-#include <unistd.h>
 
+#include <chrono>
 #include <filesystem>
 #include <fstream>
 #include <iostream>
+#include <system_error>
 #include <vector>
 
 namespace fs = std::filesystem;
 
 int main() {
-    char directory[] = "/tmp/poseidon-gallery-XXXXXX";
-    if (!mkdtemp(directory)) return 1;
-    const fs::path root(directory);
+    const fs::path root =
+        fs::temp_directory_path() /
+        ("poseidon-gallery-" +
+         std::to_string(std::chrono::steady_clock::now().time_since_epoch().count()));
+    std::error_code ec;
+    if (!fs::create_directory(root, ec)) return 1;
     auto cleanup = [&] {
         fs::remove(root / "a.png");
         fs::remove(root / "b.PNG");
