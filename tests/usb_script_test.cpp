@@ -27,6 +27,14 @@ int main() {
         return 1;
     }
 
+    if (!platform::parse_usb_script("SHIFT @\nCTRL ALT Z\n", steps, error) ||
+        steps.size() != 4 || steps[0].report[0] != 0x02 ||
+        steps[0].report[2] != 31 || steps[2].report[0] != 0x07 ||
+        steps[2].report[2] != 29) {
+        std::cerr << "Shifted punctuation or uppercase character failed: " << error << "\n";
+        return 1;
+    }
+
     if (!platform::parse_usb_script("STRING   hi\nSTRING   \nDELAY 500   \n", steps, error) ||
         steps.size() != 13 ||
         steps[0].report[2] != 44 || steps[2].report[2] != 44 ||
