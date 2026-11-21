@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <cctype>
+#include <charconv>
 #include <sstream>
 
 namespace platform {
@@ -42,7 +43,8 @@ std::string upper(std::string value) {
     return value;
 }
 
-bool key_usage(const std::string& token, uint8_t& usage) {
+bool key_usage(const std::string& token, uint8_t& usage, uint8_t& modifiers) {
+    modifiers = 0;
     if (const auto* key = find_named(kKeys, upper(token))) {
         usage = key->value;
         return true;
@@ -51,16 +53,23 @@ bool key_usage(const std::string& token, uint8_t& usage) {
         std::vector<KeyboardReport> reports;
         std::string ignored;
         if (make_simulated_keyboard_reports(token, reports, ignored)) {
+            modifiers = reports.front()[0];
             usage = reports.front()[2];
             return true;
         }
     }
     const std::string name = upper(token);
-    if (name.size() >= 2 && name[0] == 'F' && std::isdigit(static_cast<unsigned char>(name[1]))) {
-        const int number = std::atoi(name.c_str() + 1);
-        if (number >= 1 && number <= 12) {
-            usage = static_cast<uint8_t>(57 + number);
-            return true;
+    if (name.size() == 2 || name.size() == 3) {
+        if (name[0] == 'F') {
+            int number = 0;
+            const char* first = name.data() + 1;
+            const char* last = name.data() + name.size();
+            const auto result = std::from_chars(first, last, number);
+            if (result.ec == std::errc{} && result.ptr == last &&
+                number >= 1 && number <= 12) {
+                usage = static_cast<uint8_t>(57 + number);
+                return true;
+            }
         }
     }
     return false;
@@ -97,21 +106,40 @@ bool parse_usb_script(const std::string& script,
         if (upper_command == "REM") continue;
 
         if (upper_command == "DELAY") {
-            long value = -1;
-            words >> value;
-            if (words.fail() || value < 0 || value > kMaxDelayMs) {
+            std::string remainder = line.substr(command.size());
+            const auto first = remainder.find_first_not_of(" \t");
+            if (first == std::string::npos) {
+                return fail("DELAY needs 0 to 60000 ms");
+            }
+            remainder.erase(0, first);
+            const auto argument_end = remainder.find_first_of(" \t");
+            const std::string argument =
+                argument_end == std::string::npos ? remainder : remainder.substr(0, argument_end);
+            if (argument_end != std::string::npos &&
+                remainder.find_first_not_of(" \t", argument_end) != std::string::npos) {
+                return fail("DELAY needs 0 to 60000 ms");
+            }
+            int value = 0;
+            const auto result = std::from_chars(argument.data(),
+                                                argument.data() + argument.size(), value);
+            if (result.ec != std::errc{} || result.ptr != argument.data() + argument.size() ||
+                value < 0 || static_cast<uint32_t>(value) > kMaxDelayMs) {
                 return fail("DELAY needs 0 to 60000 ms");
             }
             UsbScriptStep step;
             step.delay_ms = static_cast<uint32_t>(value);
             steps.push_back(step);
         } else if (upper_command == "STRING") {
-            const auto text_start = line.find_first_not_of(" \t", command.size());
+            if (line.size() <= command.size() ||
+                (line[command.size()] != ' ' && line[command.size()] != '\t')) {
+                return fail("STRING needs text");
+            }
+            const std::size_t text_start = command.size() + 1;
             std::vector<KeyboardReport> reports;
             std::string text_error;
-            if (text_start == std::string::npos ||
+            if (text_start > line.size() ||
                 !make_simulated_keyboard_reports(line.substr(text_start), reports, text_error)) {
-                return fail(text_start == std::string::npos ? "STRING needs text" : text_error);
+                return fail(text_start > line.size() ? "STRING needs text" : text_error);
             }
             for (const auto& report : reports) {
                 UsbScriptStep step;
@@ -120,6 +148,7 @@ bool parse_usb_script(const std::string& script,
             }
         } else {
             uint8_t modifiers = 0;
+            uint8_t character_modifiers = 0;
             uint8_t usage = 0;
             bool have_key = false;
             std::string token = command;
@@ -127,14 +156,14 @@ bool parse_usb_script(const std::string& script,
                 const auto* modifier = find_named(kModifiers, upper(token));
                 if (modifier && !have_key) {
                     modifiers |= modifier->value;
-                } else if (!have_key && key_usage(token, usage)) {
+                } else if (!have_key && key_usage(token, usage, character_modifiers)) {
                     have_key = true;
                 } else {
                     return fail("Unknown command or key: " + token);
                 }
             } while (words >> token);
             UsbScriptStep press;
-            press.report[0] = modifiers;
+            press.report[0] = modifiers | character_modifiers;
             press.report[2] = usage;
             steps.push_back(press);
             steps.emplace_back();
