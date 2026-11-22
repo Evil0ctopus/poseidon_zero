@@ -32,13 +32,17 @@ FeatureList wireless_features() {
          true},
 #endif
         {"Tracker scan",
-         "Unavailable in this build; Bluetooth device discovery is not enabled",
+         "Unavailable; tracker identification is not implemented",
          FeatureRisk::Authorized,
          false},
         {"Wi-Fi discovery",
-         "Disabled placeholder; no nearby-device scan or packet collection is available",
+         "Scan nearby access points through NetworkManager",
          FeatureRisk::Authorized,
+#if USE_DESKTOP
          false},
+#else
+         true},
+#endif
         {"Deauth / Evil Twin",
          "Disabled placeholder; no packet transmission or access-point impersonation is performed",
          FeatureRisk::Authorized,
@@ -52,22 +56,31 @@ FeatureList wireless_features() {
 
 FeatureList infrared_features() {
     return {{
-        {"IR receive", "Disabled placeholder; no IR receiver is configured", FeatureRisk::Authorized, false},
+        {"IR receive", "Receive and inspect raw infrared pulses", FeatureRisk::Safe,
+#if USE_DESKTOP
+         false},
+#else
+         true},
+#endif
         {"IR replay", "Disabled placeholder; no IR signal can be replayed", FeatureRisk::Authorized, false},
         {"IR remote", "Disabled placeholder; no IR commands are transmitted", FeatureRisk::Authorized, false},
         {"IR clone",
          "Disabled placeholder; no IR signals can be learned or replayed",
          FeatureRisk::Authorized,
          false},
-        {"LED test", "Unavailable; this build has no IR device driver", FeatureRisk::Experimental, false},
+        {"LED test", "Unavailable; IR LED testing is not implemented", FeatureRisk::Experimental, false},
         {"IR pranks",
          "Disabled placeholder; no disruptive IR transmission is performed",
          FeatureRisk::Experimental,
          false},
         {"Remote learn",
-         "Disabled placeholder; no IR signal capture is available",
+         "Receive and save raw IR timings; no replay or carrier detection",
          FeatureRisk::Authorized,
+#if USE_DESKTOP
          false},
+#else
+         true},
+#endif
         {"IR transmit",
          "Disabled placeholder; transmission is not implemented",
          FeatureRisk::Safe,
@@ -136,12 +149,17 @@ ToolFeatureList tools_features() {
 
 FeatureList media_features() {
     return {{
-        {"Camera", "Unavailable; no camera capture workflow is configured", FeatureRisk::Safe, false},
-        {"Recorder", "Unavailable; no audio capture workflow is configured", FeatureRisk::Authorized, false},
-        {"Music", "Unavailable; no audio playback workflow is configured", FeatureRisk::Safe, false},
-        {"Piano", "Unavailable; no instrument workflow is configured", FeatureRisk::Safe, false},
-        {"Album art", "Unavailable; no local music metadata workflow is configured", FeatureRisk::Safe, false},
-        {"Microphone", "Unavailable; no audio capture workflow is configured", FeatureRisk::Safe, false},
+        {"Camera", "Capture an in-memory snapshot on supported devices", FeatureRisk::Authorized,
+#if USE_DESKTOP
+         false},
+#else
+         true},
+#endif
+        {"Recorder", "Capture and optionally save a short WAV recording", FeatureRisk::Authorized, true},
+        {"Music", "Play a local audio file", FeatureRisk::Safe, true},
+        {"Piano", "Play a simple keyboard of generated tones", FeatureRisk::Safe, true},
+        {"Album art", "View cover images stored beside a local track", FeatureRisk::Safe, true},
+        {"Microphone", "Measure microphone level without saving audio", FeatureRisk::Authorized, true},
         {"Speaker", "Play a short speaker test sound", FeatureRisk::Safe, true},
         {"Gallery", "Browse and view local PNG and JPEG images", FeatureRisk::Safe, true},
     }};

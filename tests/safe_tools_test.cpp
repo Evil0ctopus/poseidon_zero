@@ -1,7 +1,10 @@
 #include "gallery_image.h"
+#include "camera_capture.h"
+#include "ir_receive.h"
 #include "linux_network.h"
 #include "safe_tools.h"
 #include "tool_status.h"
+#include "wifi_scan.h"
 
 #include <cstdio>
 #include <jpeglib.h>
@@ -88,6 +91,60 @@ bool write_jpeg(const std::filesystem::path& path, unsigned int width) {
 
 int main() {
     bool passed = true;
+    const std::atomic_bool camera_running{false};
+    if (platform::capture_camera(camera_running).error.empty()) {
+        std::cerr << "Desktop camera must report unsupported\n";
+        passed = false;
+    }
+    platform::IrReceiveResult ir;
+    platform::append_ir_sample(ir, 500U);
+    platform::append_ir_sample(ir, 0x02000000U | 38000U);
+    platform::append_ir_sample(ir, 0x01000000U | 9000U);
+    platform::append_ir_sample(ir, 4500U);
+    if (ir.samples.size() != 2 || !ir.samples[0].pulse || ir.samples[0].duration_us != 9000 ||
+        ir.samples[1].pulse || ir.samples[1].duration_us != 4500 ||
+        platform::append_ir_sample(ir, 0x03000000U) != platform::IrSampleStatus::Complete ||
+        platform::append_ir_sample(ir, 0x04000000U) != platform::IrSampleStatus::Overflow) {
+        std::cerr << "IR samples must retain pulse and space timings and detect end or overflow\n";
+        passed = false;
+    }
+    platform::IrReceiveResult long_ir;
+    for (int i = 0; i < 128; ++i) platform::append_ir_sample(long_ir, 0x01000001U);
+    if (platform::append_ir_sample(long_ir, 0x01000001U) != platform::IrSampleStatus::Complete ||
+        long_ir.samples.size() != 128 || !long_ir.truncated) {
+        std::cerr << "IR receive must bound and mark truncated samples\n";
+        passed = false;
+    }
+    std::atomic_bool ir_cancelled{false};
+    if (platform::receive_ir(ir_cancelled).error.empty()) {
+        std::cerr << "Desktop IR receive must report unsupported\n";
+        passed = false;
+    }
+    ir_cancelled = true;
+    const auto cancelled_ir = platform::receive_ir(ir_cancelled);
+    if (!cancelled_ir.error.empty() || !cancelled_ir.samples.empty()) {
+        std::cerr << "Cancelled IR receive must not report data or an error\n";
+        passed = false;
+    }
+    if (platform::wifi_channel(2412) != 1 || platform::wifi_channel(2484) != 14 ||
+        platform::wifi_channel(5180) != 36 || platform::wifi_channel(5935) != 2 ||
+        platform::wifi_channel(5955) != 1 || platform::wifi_channel(58320) != 1 ||
+        platform::wifi_channel(2413) != -1 || platform::wifi_channel(0) != -1) {
+        std::cerr << "Wi-Fi frequencies must map to the correct channel or report unknown\n";
+        passed = false;
+    }
+    std::atomic_bool scan_cancelled{false};
+    const auto desktop_scan = platform::scan_wifi(scan_cancelled);
+    if (desktop_scan.error.empty() || !desktop_scan.networks.empty()) {
+        std::cerr << "Desktop Wi-Fi scan must report unsupported, not simulated networks\n";
+        passed = false;
+    }
+    scan_cancelled = true;
+    const auto cancelled_scan = platform::scan_wifi(scan_cancelled);
+    if (!cancelled_scan.error.empty() || !cancelled_scan.networks.empty()) {
+        std::cerr << "Cancelled Wi-Fi scan must not return results or an error\n";
+        passed = false;
+    }
     platform::NetworkInterfacesResult adapter_fixture;
     adapter_fixture.interfaces = {
         {"Wi-Fi", "192.0.2.1", true, true, false},
@@ -261,6 +318,26 @@ int main() {
         std::cerr << "Canceled directory reads must not report a successful listing\n";
         passed = false;
     }
+    const auto saved_ir = platform::save_ir_capture(temp, ir);
+    const auto saved_ir_again = platform::save_ir_capture(temp, ir);
+    if (!saved_ir.error.empty() || !saved_ir_again.error.empty() ||
+        saved_ir.path == saved_ir_again.path) {
+        std::cerr << "IR capture saves must create unique files\n";
+        passed = false;
+    } else {
+        std::ifstream input(saved_ir.path, std::ios::binary);
+        const std::string contents{std::istreambuf_iterator<char>(input), {}};
+        if (!input || contents != "POSEIDON_IR_V1\ncarrier_hz=unknown\npulse 9000\nspace 4500\n") {
+            std::cerr << "IR capture must preserve timings and unknown carrier\n";
+            passed = false;
+        }
+    }
+    if (platform::save_ir_capture(temp, long_ir).error.empty() ||
+        platform::save_ir_capture(temp, {}).error.empty() ||
+        platform::save_ir_capture(temp / "missing", ir).error.empty()) {
+        std::cerr << "Incomplete IR captures and invalid destinations must be rejected\n";
+        passed = false;
+    }
     const auto png_path = temp / "image.png";
     png_image png{};
     png.version = PNG_IMAGE_VERSION;
@@ -293,6 +370,34 @@ int main() {
         platform::read_gallery_image(temp / "missing.png").error.empty() ||
         platform::read_gallery_image(png_path, &cancelled).error.empty()) {
         std::cerr << "Gallery must report invalid, missing, and canceled image reads\n";
+        passed = false;
+    }
+    const auto art_directory = temp / "art";
+    if (!std::filesystem::create_directory(art_directory, error)) {
+        std::cerr << "Could not create album art test directory: " << error.message() << '\n';
+        return 1;
+    }
+    const auto track = art_directory / "track.MP3";
+    std::ofstream(track) << "track";
+    if (platform::read_album_art(track).error.empty() ||
+        platform::read_album_art(track, &cancelled).error.empty() ||
+        platform::read_album_art(temp / "sample.txt").error.empty()) {
+        std::cerr << "Album art must report missing covers, cancellation and non-audio files\n";
+        passed = false;
+    }
+    std::filesystem::copy_file(png_path, art_directory / "folder.png", error);
+    if (error) {
+        std::cerr << "Could not create album art fixture: " << error.message() << '\n';
+        return 1;
+    }
+    const auto album = platform::read_album_art(track);
+    if (!album.error.empty() || album.pixels != image.pixels) {
+        std::cerr << "Album art must find and decode folder.png beside a track\n";
+        passed = false;
+    }
+    std::ofstream(art_directory / "cover.jpg") << "invalid";
+    if (platform::read_album_art(track).error.find("cover.jpg") == std::string::npos) {
+        std::cerr << "Album art must report a corrupt higher-priority cover\n";
         passed = false;
     }
     const auto boundary_png = temp / "boundary.png";

@@ -50,6 +50,10 @@ private:
     lv_obj_t* title_{nullptr};
     lv_obj_t* page_badge_{nullptr};
     lv_obj_t* footer_{nullptr};
+    lv_obj_t* rule_{nullptr};
+    lv_obj_t* keys_heading_{nullptr};
+    lv_obj_t* legend_heading_{nullptr};
+    lv_obj_t* legend_{nullptr};
     std::array<RowWidgets, 5> rows_{};
 };
 

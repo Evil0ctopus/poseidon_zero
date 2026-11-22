@@ -3,11 +3,50 @@
 
 #include <png.h>
 
+#include <algorithm>
+#include <cctype>
 #include <cstdio>
 #include <cstdlib>
 #include <memory>
 
 namespace platform {
+
+GalleryImage read_album_art(const std::filesystem::path& track,
+                            const std::atomic_bool* cancelled) {
+    if (cancelled && cancelled->load()) return {0, 0, {}, "Album art read canceled"};
+    std::error_code error;
+    const auto status = std::filesystem::status(track, error);
+    if (error) return {0, 0, {}, "Cannot inspect track: " + error.message()};
+    if (!std::filesystem::is_regular_file(status))
+        return {0, 0, {}, "Select a regular audio file"};
+    auto extension = track.extension().u8string();
+    std::transform(extension.begin(), extension.end(), extension.begin(),
+                   [](unsigned char ch) { return static_cast<char>(std::tolower(ch)); });
+    if (extension != ".mp3" && extension != ".flac" && extension != ".wav")
+        return {0, 0, {}, "Select a WAV, MP3 or FLAC file"};
+    static constexpr const char* names[] = {
+        "cover.jpg", "cover.jpeg", "cover.png",
+        "folder.jpg", "folder.jpeg", "folder.png",
+        "album.jpg", "album.jpeg", "album.png"
+    };
+    for (const auto* name : names) {
+        if (cancelled && cancelled->load()) return {0, 0, {}, "Album art read canceled"};
+        const auto candidate = track.parent_path() / name;
+        const auto candidate_status = std::filesystem::status(candidate, error);
+        if (error == std::errc::no_such_file_or_directory) {
+            error.clear();
+            continue;
+        }
+        if (error) return {0, 0, {}, "Cannot inspect cover: " + error.message()};
+        if (!std::filesystem::exists(candidate_status)) continue;
+        if (!std::filesystem::is_regular_file(candidate_status))
+            return {0, 0, {}, std::string(name) + " is not a regular file"};
+        auto image = read_gallery_image(candidate, cancelled);
+        if (!image.error.empty()) image.error = std::string(name) + ": " + image.error;
+        return image;
+    }
+    return {0, 0, {}, "No cover, folder or album image found"};
+}
 
 GalleryImage read_gallery_image(const std::filesystem::path& path,
                                 const std::atomic_bool* cancelled) {

@@ -6,6 +6,7 @@
 
 #pragma once
 
+#include <array>
 #include <cstdint>
 
 namespace model {
@@ -13,8 +14,22 @@ namespace model {
 inline constexpr int32_t kStandardToolItemCount = 8;
 inline constexpr int32_t kSystemToolItemCount = 10;
 inline constexpr int32_t kToolsPageItemCount = 17;
+inline constexpr int32_t kWirelessReferenceItemCount = 21;
+inline constexpr int32_t kWirelessToolItemCount =
+    kWirelessReferenceItemCount + kStandardToolItemCount;
+inline constexpr int32_t kMaxToolItemCount = kWirelessToolItemCount;
 inline constexpr int32_t kScreensaverPaletteCount = 3;
 inline constexpr uint32_t kScreensaverIdleMs = 120000;
+
+struct WirelessReferenceItem {
+    const char* label;
+    char shortcut;
+    const char* description;
+};
+
+extern const std::array<WirelessReferenceItem, kWirelessReferenceItemCount>
+    kWirelessReferenceItems;
+int32_t wireless_reference_shortcut(uint32_t key);
 
 enum class ThemeId : int32_t {
     Poseidon = 0,
@@ -43,6 +58,13 @@ enum class AppPage {
     Tools = 6,
     Media = 7,
 };
+
+constexpr int32_t tool_item_count(AppPage page) {
+    return page == AppPage::Tools ? kToolsPageItemCount
+           : page == AppPage::Butter ? kSystemToolItemCount
+           : page == AppPage::Wireless ? kWirelessToolItemCount
+                                       : kStandardToolItemCount;
+}
 
 class BaseModel {
 public:

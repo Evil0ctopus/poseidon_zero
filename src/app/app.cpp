@@ -10,12 +10,14 @@
 #include "asset_manager.h"
 #include "backlight.h"
 #include "bluetooth_gatt.h"
+#include "camera_capture.h"
 #include "capabilities.h"
 #include "device_status.h"
 #include "help_popup.h"
 #include "logger.h"
 #include "linux_input.h"
 #include "memory_status.h"
+#include "microphone.h"
 #include "screenshot_service.h"
 #include "safe_tools.h"
 #include "screen_manager.h"
@@ -24,6 +26,8 @@
 #include "tool_status.h"
 #include "ui_sound.h"
 #include "usb_keyboard_simulator.h"
+#include "wifi_scan.h"
+#include "ir_receive.h"
 #include "linux_network.h"
 #include "feature_catalog.h"
 #include "gallery_image.h"
@@ -32,8 +36,10 @@
 #include "src/misc/cache/instance/lv_image_cache.h"
 
 #include <algorithm>
+#include <array>
 #include <atomic>
 #include <chrono>
+#include <cmath>
 #include <cstdint>
 #include <cstdlib>
 #include <cstdio>
@@ -157,13 +163,134 @@ void persist_theme_observer(lv_observer_t* observer, lv_subject_t* subject) {
     persist_theme(*persistence, lv_subject_get_int(subject));
 }
 
+class BootSplash {
+public:
+    explicit BootSplash(AssetManager& assets) : assets_(assets) {}
+
+    ~BootSplash() { finish(); }
+
+    void start(bool reduced_motion) {
+        reduced_motion_ = reduced_motion;
+        const auto path = assets_.resolve("images/poseidon-boot.png");
+        if (path.empty()) {
+            LOG_WARN("boot logo asset not found");
+        } else {
+            auto image = platform::read_gallery_image(path);
+            if (!image.error.empty()) {
+                LOG_WARN("failed to load boot logo: {}", image.error);
+            } else {
+                pixels_ = std::move(image.pixels);
+                image_.header.magic = LV_IMAGE_HEADER_MAGIC;
+                image_.header.cf = LV_COLOR_FORMAT_ARGB8888;
+                image_.header.w = image.width;
+                image_.header.h = image.height;
+                image_.header.stride = image.width * 4U;
+                image_.data_size = static_cast<uint32_t>(pixels_.size());
+                image_.data = pixels_.data();
+            }
+        }
+
+        root_ = lv_obj_create(lv_layer_top());
+        lv_obj_remove_style_all(root_);
+        lv_obj_set_size(root_, view::kScreenWidth, view::kScreenHeight);
+        lv_obj_set_style_bg_color(root_, lv_color_hex(0x050308), 0);
+        lv_obj_set_style_bg_opa(root_, LV_OPA_COVER, 0);
+        lv_obj_clear_flag(root_, LV_OBJ_FLAG_SCROLLABLE);
+        lv_obj_add_flag(root_, LV_OBJ_FLAG_CLICKABLE);
+
+        status_ = lv_label_create(root_);
+        lv_label_set_text(status_, "POSEIDON\n\nInitializing display\nLoading interface");
+        lv_obj_set_style_text_font(status_, &lv_font_montserrat_12, 0);
+        lv_obj_set_style_text_color(status_, lv_color_hex(0x5ee6f5), 0);
+        lv_obj_align(status_, LV_ALIGN_TOP_LEFT, 12, 10);
+
+        if (!pixels_.empty()) {
+            logo_ = lv_image_create(root_);
+            lv_image_set_src(logo_, &image_);
+            lv_obj_align(logo_, LV_ALIGN_TOP_MID, 0, 7);
+            lv_obj_add_flag(logo_, LV_OBJ_FLAG_HIDDEN);
+        }
+        footer_ = lv_label_create(root_);
+        lv_label_set_text(footer_, "EDU // AUTHORIZED TESTING ONLY");
+        lv_obj_set_style_text_font(footer_, &lv_font_montserrat_10, 0);
+        lv_obj_set_style_text_color(footer_, lv_color_hex(0x7bf6b0), 0);
+        lv_obj_align(footer_, LV_ALIGN_BOTTOM_MID, 0, -8);
+        lv_obj_add_flag(footer_, LV_OBJ_FLAG_HIDDEN);
+        for (auto& bar : bars_) {
+            bar = lv_obj_create(root_);
+            lv_obj_remove_style_all(bar);
+            lv_obj_set_style_bg_color(bar, lv_color_hex(0xd946ef), 0);
+            lv_obj_set_style_bg_opa(bar, LV_OPA_70, 0);
+            lv_obj_clear_flag(bar, LV_OBJ_FLAG_CLICKABLE);
+            lv_obj_add_flag(bar, LV_OBJ_FLAG_HIDDEN);
+        }
+        started_ = lv_tick_get();
+    }
+
+    bool active() const { return root_ != nullptr; }
+
+    void update() {
+        if (!root_) {
+            return;
+        }
+        const uint32_t elapsed = lv_tick_elaps(started_);
+        const uint32_t duration = reduced_motion_ ? 1500U : 3200U;
+        if (elapsed >= duration) {
+            finish();
+            return;
+        }
+        if (elapsed < duration / 2U) {
+            return;
+        }
+        lv_obj_add_flag(status_, LV_OBJ_FLAG_HIDDEN);
+        if (logo_) {
+            lv_obj_remove_flag(logo_, LV_OBJ_FLAG_HIDDEN);
+            const auto opacity = reduced_motion_ ? 255U :
+                std::min(255U, (elapsed - duration / 2U) * 255U / 400U);
+            lv_obj_set_style_image_opa(logo_, static_cast<lv_opa_t>(opacity), 0);
+        }
+        lv_obj_remove_flag(footer_, LV_OBJ_FLAG_HIDDEN);
+        for (std::size_t i = 0; i < bars_.size(); ++i) {
+            const double distance = std::abs(static_cast<double>(i) - 23.5) / 23.5;
+            const double phase = reduced_motion_ ? 0.0 : elapsed / 125.0;
+            const int height = 2 + static_cast<int>((1.0 - distance) *
+                (std::sin(phase + i * 0.5) * 0.5 + 0.5) * 19.0);
+            lv_obj_set_pos(bars_[i], 8 + static_cast<int>(i) * 6, 148 - height);
+            lv_obj_set_size(bars_[i], 4, height);
+            lv_obj_remove_flag(bars_[i], LV_OBJ_FLAG_HIDDEN);
+        }
+        lv_obj_move_foreground(footer_);
+    }
+
+    void finish() {
+        if (root_) {
+            lv_obj_delete(root_);
+            root_ = nullptr;
+        }
+    }
+
+private:
+    AssetManager& assets_;
+    lv_obj_t* root_{nullptr};
+    lv_obj_t* status_{nullptr};
+    lv_obj_t* logo_{nullptr};
+    lv_obj_t* footer_{nullptr};
+    std::array<lv_obj_t*, 48> bars_{};
+    std::vector<uint8_t> pixels_;
+    lv_image_dsc_t image_{};
+    uint32_t started_{0};
+    bool reduced_motion_{false};
+};
+
 class ShortcutController {
 public:
     ShortcutController(viewmodel::BaseViewModel& view_model,
                        AssetManager& assets,
-                       ThemePersistence& theme_persistence)
+                       ThemePersistence& theme_persistence,
+                       BootSplash& boot_splash)
         : view_model_(view_model),
           theme_persistence_(theme_persistence),
+          boot_splash_(boot_splash),
           ui_sound_(assets.resolve("audio/click.wav").string()),
           toast_(std::make_unique<view::widgets::Toast>(lv_layer_top(), view_model, assets)),
           help_popup_(std::make_unique<view::widgets::HelpPopup>(lv_layer_top(), view_model, assets)) {
@@ -181,6 +308,24 @@ public:
     ~ShortcutController() {
         platform::clear_key_release_listener(key_release_listener, this);
         platform::clear_global_key_listener(global_key_listener, this);
+        if (microphone_task_) {
+            microphone_task_->cancelled = true;
+        }
+        if (microphone_thread_.joinable()) {
+            microphone_thread_.join();
+        }
+        if (ir_task_) {
+            ir_task_->cancelled = true;
+        }
+        if (ir_thread_.joinable()) {
+            ir_thread_.join();
+        }
+        if (wifi_task_) {
+            wifi_task_->cancelled = true;
+        }
+        if (wifi_thread_.joinable()) {
+            wifi_thread_.join();
+        }
         if (gatt_task_) {
             gatt_task_->cancelled = true;
         }
@@ -211,12 +356,25 @@ public:
     void update() {
         update_network_query();
         update_gatt();
+        update_wifi();
+        update_ir();
         update_file_browser();
         update_gallery_image();
-        const auto sound_error = ui_sound_.take_error();
-        if (!sound_error.empty()) {
-            LOG_WARN("{}", sound_error);
-            toast_->show(sound_error, view::widgets::ToastTone::Error, 4200);
+        update_music();
+        update_microphone();
+        if (piano_active_) {
+            const auto status = ui_sound_.tone_status();
+            if (status.state == platform::MusicState::Error && status.error != piano_error_) {
+                piano_error_ = status.error;
+                show_piano();
+            }
+        }
+        if (!music_active_ && !microphone_active_) {
+            const auto sound_error = ui_sound_.take_error();
+            if (!sound_error.empty()) {
+                LOG_WARN("{}", sound_error);
+                toast_->show(sound_error, view::widgets::ToastTone::Error, 4200);
+            }
         }
         if (visual_tool_mode_ == VisualToolMode::Ambient ||
             visual_tool_mode_ == VisualToolMode::Screensaver) {
@@ -234,7 +392,8 @@ public:
                  !file_browser_active_ && !interfaces_active_ && !arp_active_ &&
                  !chance_tool_active_ && !brightness_adjustment_ &&
                  text_tool_mode_ == TextToolMode::None &&
-                 gatt_stage_ == GattStage::None && !network_query_ &&
+                 gatt_stage_ == GattStage::None && !wifi_active_ && !wifi_task_ &&
+                 !ir_active_ && !ir_task_ && !network_query_ &&
                  !help_popup_->visible() && !toast_->visible() &&
                  view_model_.screensaver_due(lv_display_get_inactive_time(nullptr))) {
             start_screensaver();
@@ -262,6 +421,13 @@ private:
         Gallery,
     };
 
+    enum class FileMode {
+        Files,
+        Gallery,
+        Music,
+        AlbumArt,
+    };
+
     struct NetworkQueryState {
         std::mutex mutex;
         std::string host;
@@ -284,6 +450,7 @@ private:
         std::mutex mutex;
         platform::GalleryImage result;
         bool complete{false};
+        bool camera{false};
     };
 
     enum class GattStage {
@@ -304,6 +471,446 @@ private:
         platform::BluetoothScanResult scan_result;
         platform::GattBrowseResult browse_result;
     };
+
+    struct WifiTask {
+        std::atomic_bool cancelled{false};
+        std::mutex mutex;
+        bool complete{false};
+        platform::WifiScanResult result;
+    };
+
+    struct IrTask {
+        std::atomic_bool cancelled{false};
+        std::mutex mutex;
+        bool complete{false};
+        bool saving{false};
+        platform::IrReceiveResult result;
+        platform::IrSaveResult save_result;
+    };
+
+    struct MicrophoneTask {
+        std::atomic_bool cancelled{false};
+        std::mutex mutex;
+        bool complete{false};
+        bool recording{false};
+        bool saving{false};
+        platform::MicrophoneLevel result;
+        platform::MicrophoneRecording recording_result;
+        platform::RecordingSaveResult save_result;
+        std::vector<int16_t> samples;
+    };
+
+    void start_microphone_test(bool recording = false) {
+        if (microphone_task_) {
+            toast_->show("Previous microphone test is stopping",
+                         view::widgets::ToastTone::Warning, 3200);
+            return;
+        }
+        microphone_active_ = true;
+        microphone_confirm_ = true;
+        microphone_recording_mode_ = recording;
+        microphone_ready_ = false;
+        microphone_samples_.clear();
+        ui_sound_.play(0);
+        toast_->show_persistent(recording
+            ? "Recorder: 5 seconds\nAudio stays in memory\nENTER start  ESC back"
+            : "Microphone level test\n5 seconds; no audio saved\nENTER start  ESC back");
+    }
+
+    void run_microphone_test() {
+        auto task = std::make_shared<MicrophoneTask>();
+        task->recording = microphone_recording_mode_;
+        microphone_task_ = task;
+        microphone_confirm_ = false;
+        toast_->show_persistent(microphone_recording_mode_
+            ? "Microphone active\nRecording for 5 seconds\nESC cancels and discards"
+            : "Microphone active\nListening for 5 seconds\nNo audio saved  ESC cancel");
+        try {
+            microphone_thread_ = std::thread([task] {
+                platform::MicrophoneLevel result;
+                platform::MicrophoneRecording recording;
+                try {
+                    if (task->recording)
+                        recording = platform::record_microphone(task->cancelled,
+                                                                 std::chrono::seconds(5));
+                    else
+                        result = platform::measure_microphone(task->cancelled,
+                                                              std::chrono::seconds(5));
+                } catch (const std::exception& error) {
+                    result.error = std::string("Microphone test failed: ") + error.what();
+                }
+                std::lock_guard<std::mutex> lock(task->mutex);
+                task->result = std::move(result);
+                task->recording_result = std::move(recording);
+                task->complete = true;
+            });
+        } catch (const std::system_error& error) {
+            microphone_task_.reset();
+            toast_->show_persistent("Microphone test failed\n" + error.code().message() +
+                                        "\nESC back", view::widgets::ToastTone::Error);
+        }
+    }
+
+    void save_microphone_recording() {
+#if USE_DESKTOP && defined(_WIN32)
+        const wchar_t* home = _wgetenv(L"HOME");
+        if (!home || home[0] == L'\0') home = _wgetenv(L"USERPROFILE");
+#else
+        const char* home = std::getenv("HOME");
+#endif
+        if (!home || home[0] == 0) {
+            toast_->show_persistent("Home directory unavailable\nENTER retry  ESC discard",
+                                    view::widgets::ToastTone::Error);
+            return;
+        }
+        const std::filesystem::path home_directory(home);
+        if (!home_directory.is_absolute()) {
+            toast_->show_persistent("Home path must be absolute\nENTER retry  ESC discard",
+                                    view::widgets::ToastTone::Error);
+            return;
+        }
+        const auto directory = home_directory / "poseidon-recordings";
+        auto task = std::make_shared<MicrophoneTask>();
+        task->saving = true;
+        task->samples = std::move(microphone_samples_);
+        microphone_task_ = task;
+        toast_->show_persistent("Saving recording...\nPlease wait");
+        try {
+            microphone_thread_ = std::thread([task, directory] {
+                platform::RecordingSaveResult result;
+                try {
+                    std::error_code error;
+                    std::filesystem::create_directory(directory, error);
+                    if (error) {
+                        result.error = "Recording folder: " + error.message();
+                    } else {
+                        result = platform::save_recording(directory, task->samples);
+                    }
+                } catch (const std::exception& error) {
+                    result.error = std::string("Recording save failed: ") + error.what();
+                }
+                std::lock_guard<std::mutex> lock(task->mutex);
+                task->save_result = std::move(result);
+                task->complete = true;
+            });
+        } catch (const std::system_error& error) {
+            microphone_samples_ = std::move(task->samples);
+            microphone_task_.reset();
+            toast_->show_persistent("Could not save: " + error.code().message() +
+                                        "\nENTER retry  ESC discard", view::widgets::ToastTone::Error);
+        }
+    }
+
+    void update_microphone() {
+        const auto task = microphone_task_;
+        if (!task) return;
+        {
+            std::lock_guard<std::mutex> lock(task->mutex);
+            if (!task->complete) return;
+        }
+        if (microphone_thread_.joinable()) microphone_thread_.join();
+        microphone_task_.reset();
+        if (task->cancelled) {
+            microphone_active_ = false;
+            microphone_samples_.clear();
+            toast_->hide();
+            return;
+        }
+        if (!microphone_active_) return;
+        if (task->saving) {
+            if (!task->save_result.error.empty()) {
+                microphone_samples_ = std::move(task->samples);
+                toast_->show_persistent(task->save_result.error + "\nENTER retry  ESC discard",
+                                        view::widgets::ToastTone::Error);
+            } else {
+                microphone_ready_ = false;
+                toast_->show_persistent("Saved in poseidon-recordings:\n" +
+                    file_display_text(task->save_result.path.filename().u8string(), 28) +
+                    "\nESC back");
+            }
+            return;
+        }
+        const auto& result = task->result;
+        const auto& error = result.error.empty() ? task->recording_result.error : result.error;
+        if (!error.empty()) {
+            toast_->show_persistent(error + "\nESC back", view::widgets::ToastTone::Error);
+        } else if (task->recording) {
+            microphone_samples_ = std::move(task->recording_result.samples);
+            microphone_ready_ = true;
+            toast_->show_persistent("Recording complete\nENTER saves in home/\nposeidon-recordings\nESC discards");
+        } else {
+            toast_->show_persistent("Microphone test complete\nPeak level: " +
+                                    std::to_string(result.peak_percent) +
+                                    "%\nNo audio saved  ESC back");
+        }
+    }
+
+    bool handle_microphone_key(uint32_t key, bool long_pressed) {
+        if (long_pressed) return true;
+        if (key == LV_KEY_ESC || key == LV_KEY_BACKSPACE) {
+            if (microphone_task_ && microphone_task_->saving) return true;
+            if (microphone_task_) {
+                microphone_task_->cancelled = true;
+                toast_->show_persistent("Stopping microphone...\nPlease wait");
+                return true;
+            }
+            microphone_active_ = false;
+            microphone_confirm_ = false;
+            microphone_ready_ = false;
+            microphone_samples_.clear();
+            toast_->hide();
+        } else if (key == LV_KEY_ENTER && microphone_confirm_) {
+            run_microphone_test();
+        } else if (key == LV_KEY_ENTER && microphone_ready_ && !microphone_task_) {
+            save_microphone_recording();
+        }
+        return true;
+    }
+
+    void start_ir_receive() {
+        if (ir_task_) {
+            toast_->show("Previous IR receive is stopping",
+                         view::widgets::ToastTone::Warning, 3200);
+            return;
+        }
+        auto task = std::make_shared<IrTask>();
+        ir_task_ = task;
+        ir_active_ = true;
+        ir_receiving_ = true;
+        ir_notice_.clear();
+        toast_->show_persistent("Waiting for infrared signal...\nESC cancels");
+        try {
+            ir_thread_ = std::thread([task] {
+                platform::IrReceiveResult result;
+                try {
+                    result = platform::receive_ir(task->cancelled);
+                } catch (const std::exception& error) {
+                    result.error = std::string("IR receive failed: ") + error.what();
+                }
+                std::lock_guard<std::mutex> lock(task->mutex);
+                task->result = std::move(result);
+                task->complete = true;
+            });
+        } catch (const std::system_error& error) {
+            ir_task_.reset();
+            ir_receiving_ = false;
+            ir_result_ = {};
+            ir_result_.error = "Could not start receiver: " + error.code().message();
+            show_ir();
+        }
+    }
+
+    void start_ir_save() {
+        if (ir_task_) return;
+        if (ir_result_.samples.empty() || ir_result_.truncated || !ir_result_.error.empty()) {
+            ir_notice_ = "Only complete captures can be saved";
+            show_ir();
+            return;
+        }
+#if USE_DESKTOP && defined(_WIN32)
+        const wchar_t* home = _wgetenv(L"HOME");
+        if (!home || home[0] == L'\0') home = _wgetenv(L"USERPROFILE");
+#else
+        const char* home = std::getenv("HOME");
+#endif
+        if (!home || home[0] == 0 || !std::filesystem::path(home).is_absolute()) {
+            ir_notice_ = "Absolute home path unavailable";
+            show_ir();
+            return;
+        }
+        const auto directory = std::filesystem::path(home) / "poseidon-ir";
+        auto task = std::make_shared<IrTask>();
+        task->saving = true;
+        task->result = ir_result_;
+        ir_task_ = task;
+        toast_->show_persistent("Saving IR timings...\nPlease wait");
+        try {
+            ir_thread_ = std::thread([task, directory] {
+                platform::IrSaveResult result;
+                try {
+                    std::error_code error;
+                    std::filesystem::create_directory(directory, error);
+                    if (error) {
+                        result.error = "IR folder: " + error.message();
+                    } else {
+                        result = platform::save_ir_capture(directory, task->result);
+                    }
+                } catch (const std::exception& error) {
+                    result.error = std::string("IR save failed: ") + error.what();
+                }
+                std::lock_guard<std::mutex> lock(task->mutex);
+                task->save_result = std::move(result);
+                task->complete = true;
+            });
+        } catch (const std::system_error& error) {
+            ir_task_.reset();
+            ir_notice_ = "Could not save: " + error.code().message();
+            show_ir();
+        }
+    }
+
+    void show_ir() {
+        std::string message;
+        if (!ir_result_.error.empty()) {
+            message = "IR error\n" + ir_result_.error;
+        } else if (ir_result_.samples.empty()) {
+            message = "No infrared signal received";
+        } else {
+            const auto& sample = ir_result_.samples[ir_selection_];
+            message = "IR sample " + std::to_string(ir_selection_ + 1) + "/" +
+                      std::to_string(ir_result_.samples.size()) +
+                      (ir_result_.truncated ? "+" : "") + "\n" +
+                      (sample.pulse ? "Pulse " : "Space ") +
+                      std::to_string(sample.duration_us) + " us";
+        }
+        if (!ir_notice_.empty()) message += "\n" + file_display_text(ir_notice_, 30);
+        message += ir_learning_
+                       ? "\nUP/DOWN  ENTER receive  S save\nESC back"
+                       : "\nUP/DOWN select  ENTER receive\nESC back";
+        toast_->show_persistent(message, ir_result_.error.empty()
+                                             ? view::widgets::ToastTone::Default
+                                             : view::widgets::ToastTone::Warning);
+    }
+
+    void update_ir() {
+        const auto task = ir_task_;
+        if (!task) return;
+        {
+            std::lock_guard<std::mutex> lock(task->mutex);
+            if (!task->complete) return;
+        }
+        if (ir_thread_.joinable()) ir_thread_.join();
+        ir_task_.reset();
+        ir_receiving_ = false;
+        if (task->saving) {
+            ir_notice_ = task->save_result.error.empty()
+                             ? "Saved in home/poseidon-ir"
+                             : task->save_result.error;
+            if (ir_active_) show_ir();
+            return;
+        }
+        if (task->cancelled) return;
+        ir_result_ = std::move(task->result);
+        ir_selection_ = 0;
+        show_ir();
+    }
+
+    bool handle_ir_key(uint32_t key, bool long_pressed) {
+        if (long_pressed) return true;
+        if (ir_task_ && ir_task_->saving) return true;
+        if (key == LV_KEY_ESC || key == LV_KEY_BACKSPACE) {
+            if (ir_task_) ir_task_->cancelled = true;
+            ir_active_ = false;
+            toast_->hide();
+        } else if (!ir_receiving_) {
+            const bool previous = key == LV_KEY_UP || key == LV_KEY_LEFT || key == 'f' || key == 'z';
+            const bool next = key == LV_KEY_DOWN || key == LV_KEY_RIGHT || key == 'x' || key == 'c';
+            if (previous && ir_selection_ > 0) {
+                --ir_selection_;
+                show_ir();
+            } else if (next && ir_selection_ + 1 < ir_result_.samples.size()) {
+                ++ir_selection_;
+                show_ir();
+            } else if (key == LV_KEY_ENTER) {
+                start_ir_receive();
+            } else if (ir_learning_ && (key == 's' || key == 'S')) {
+                start_ir_save();
+            }
+        }
+        return true;
+    }
+
+    void start_wifi_scan() {
+        if (wifi_task_) {
+            toast_->show("Previous Wi-Fi scan is stopping",
+                         view::widgets::ToastTone::Warning, 3200);
+            return;
+        }
+        auto task = std::make_shared<WifiTask>();
+        wifi_task_ = task;
+        wifi_active_ = true;
+        wifi_scanning_ = true;
+        toast_->show_persistent("Scanning nearby Wi-Fi networks...\nESC cancels");
+        try {
+            wifi_thread_ = std::thread([task] {
+                platform::WifiScanResult result;
+                try {
+                    result = platform::scan_wifi(task->cancelled);
+                } catch (const std::exception& error) {
+                    result.error = std::string("Wi-Fi scan failed: ") + error.what();
+                }
+                std::lock_guard<std::mutex> lock(task->mutex);
+                task->result = std::move(result);
+                task->complete = true;
+            });
+        } catch (const std::system_error& error) {
+            wifi_task_.reset();
+            wifi_scanning_ = false;
+            wifi_result_ = {};
+            wifi_result_.error = "Could not start scan: " + error.code().message();
+            show_wifi();
+        }
+    }
+
+    void show_wifi() {
+        std::string message;
+        if (!wifi_result_.error.empty()) {
+            message = "Wi-Fi error\n" + wifi_result_.error;
+        } else if (wifi_result_.networks.empty()) {
+            message = "No Wi-Fi networks found";
+        } else {
+            const auto& network = wifi_result_.networks[wifi_selection_];
+            const int channel = platform::wifi_channel(network.frequency_mhz);
+            message = "Wi-Fi " + std::to_string(wifi_selection_ + 1) + "/" +
+                      std::to_string(wifi_result_.networks.size()) + "\n" +
+                      network.name + "\n" + network.address + "\n" +
+                      std::to_string(network.strength) + "%  " +
+                      (network.secured ? "Secured" : "Open") +
+                      (channel >= 0 ? "  Ch " + std::to_string(channel) : "");
+        }
+        message += "\nUP/DOWN select  ENTER rescan\nESC back";
+        toast_->show_persistent(message, wifi_result_.error.empty()
+                                             ? view::widgets::ToastTone::Default
+                                             : view::widgets::ToastTone::Warning);
+    }
+
+    void update_wifi() {
+        const auto task = wifi_task_;
+        if (!task) return;
+        {
+            std::lock_guard<std::mutex> lock(task->mutex);
+            if (!task->complete) return;
+        }
+        if (wifi_thread_.joinable()) wifi_thread_.join();
+        wifi_task_.reset();
+        wifi_scanning_ = false;
+        if (task->cancelled) return;
+        wifi_result_ = std::move(task->result);
+        wifi_selection_ = 0;
+        show_wifi();
+    }
+
+    bool handle_wifi_key(uint32_t key, bool long_pressed) {
+        if (long_pressed) return true;
+        if (key == LV_KEY_ESC || key == LV_KEY_BACKSPACE) {
+            if (wifi_task_) wifi_task_->cancelled = true;
+            wifi_active_ = false;
+            toast_->hide();
+        } else if (!wifi_scanning_) {
+            const bool previous = key == LV_KEY_UP || key == LV_KEY_LEFT || key == 'f' || key == 'z';
+            const bool next = key == LV_KEY_DOWN || key == LV_KEY_RIGHT || key == 'x' || key == 'c';
+            if (previous && wifi_selection_ > 0) {
+                --wifi_selection_;
+                show_wifi();
+            } else if (next && wifi_selection_ + 1 < wifi_result_.networks.size()) {
+                ++wifi_selection_;
+                show_wifi();
+            } else if (key == LV_KEY_ENTER) {
+                start_wifi_scan();
+            }
+        }
+        return true;
+    }
 
     void start_gatt_scan() {
         if (gatt_task_) {
@@ -610,7 +1217,10 @@ private:
         if (folder.empty()) {
             folder = file_directory_.root_path().u8string();
         }
-        std::string message = (file_gallery_mode_ ? "Gallery: " : "Files: ") +
+        const char* title = file_mode_ == FileMode::Gallery ? "Gallery: "
+                            : file_mode_ == FileMode::AlbumArt ? "Album art: "
+                            : file_mode_ == FileMode::Music ? "Music: " : "Files: ";
+        std::string message = std::string(title) +
                               file_display_text(folder, 20);
         if (!file_notice_.empty()) {
             message += "\n" + file_display_text(file_notice_, 30);
@@ -629,8 +1239,10 @@ private:
                                            : "\nSize unavailable";
             }
         }
-        message += file_gallery_mode_ ? "\nUP/DOWN select  ENTER view\n"
-                                      : "\nUP/DOWN select  ENTER open\n";
+        message += file_mode_ == FileMode::Gallery ? "\nUP/DOWN select  ENTER view\n"
+                   : file_mode_ == FileMode::AlbumArt ? "\nSelect track  ENTER cover\n"
+                   : file_mode_ == FileMode::Music ? "\nUP/DOWN select  ENTER play\n"
+                                                  : "\nUP/DOWN select  ENTER open\n";
         message += "P/N page  BACK up  ESC exit";
         toast_->show_persistent(message, file_notice_.empty()
                                              ? view::widgets::ToastTone::Default
@@ -717,7 +1329,7 @@ private:
         show_file_browser();
     }
 
-    void start_file_browser(bool gallery = false) {
+    void start_file_browser(FileMode mode = FileMode::Files) {
 #if USE_DESKTOP && defined(_WIN32)
         const wchar_t* home = _wgetenv(L"HOME");
 #else
@@ -734,7 +1346,7 @@ private:
             return;
         }
         try {
-            file_gallery_mode_ = gallery;
+            file_mode_ = mode;
 #if USE_DESKTOP && defined(_WIN32)
             open_file_directory(std::filesystem::path(home));
 #else
@@ -794,8 +1406,12 @@ private:
             const auto path = file_directory_ / std::filesystem::u8path(entry.name);
             if (entry.directory) {
                 open_file_directory(path);
-            } else if (file_gallery_mode_) {
+            } else if (file_mode_ == FileMode::Gallery) {
                 start_gallery_image(path);
+            } else if (file_mode_ == FileMode::AlbumArt) {
+                start_gallery_image(path, true);
+            } else if (file_mode_ == FileMode::Music) {
+                start_music(path);
             }
             return true;
         }
@@ -804,7 +1420,78 @@ private:
         return true;
     }
 
-    void start_gallery_image(const std::filesystem::path& path) {
+    void start_music(const std::filesystem::path& path) {
+        music_name_ = file_display_text(path.filename().u8string(), 24);
+        music_active_ = true;
+        music_state_ = platform::MusicState::Stopped;
+        music_error_.clear();
+        ui_sound_.play_music(path, 50);
+        update_music();
+    }
+
+    void update_music() {
+        if (!music_active_) return;
+        const auto status = ui_sound_.music_status();
+        if (status.state == music_state_ && status.error == music_error_) return;
+        music_state_ = status.state;
+        music_error_ = status.error;
+        std::string message = "Music\n" + music_name_ + "\n";
+        switch (music_state_) {
+            case platform::MusicState::Loading: message += "Opening audio..."; break;
+            case platform::MusicState::Playing: message += "Playing at 50% volume"; break;
+            case platform::MusicState::Finished: message += "Playback finished"; break;
+            case platform::MusicState::Error: message += music_error_; break;
+            case platform::MusicState::Stopped: message += "Playback stopped"; break;
+        }
+        message += "\nESC stop / back";
+        toast_->show_persistent(message, music_state_ == platform::MusicState::Error
+                                             ? view::widgets::ToastTone::Warning
+                                             : view::widgets::ToastTone::Default);
+    }
+
+    bool handle_music_key(uint32_t key, bool long_pressed) {
+        if (!long_pressed && (key == LV_KEY_ESC || key == LV_KEY_BACKSPACE)) {
+            ui_sound_.stop_music();
+            music_active_ = false;
+            show_file_browser();
+        }
+        return true;
+    }
+
+    void show_piano() {
+        std::string message = "Piano: A S D F G H J K\nC D E F G A B C";
+        if (!piano_error_.empty()) message += "\n" + piano_error_;
+        message += "\nESC back";
+        toast_->show_persistent(message, piano_error_.empty()
+                                             ? view::widgets::ToastTone::Default
+                                             : view::widgets::ToastTone::Warning);
+    }
+
+    bool handle_piano_key(uint32_t key, bool long_pressed) {
+        if (long_pressed) return true;
+        if (key == LV_KEY_ESC || key == LV_KEY_BACKSPACE) {
+            piano_active_ = false;
+            ui_sound_.stop_tone();
+            toast_->hide();
+            return true;
+        }
+        static constexpr char keys[] = "asdfghjk";
+        static constexpr double frequencies[] = {
+            261.63, 293.66, 329.63, 349.23, 392.00, 440.00, 493.88, 523.25
+        };
+        if (key >= 'A' && key <= 'Z') key += 'a' - 'A';
+        for (std::size_t i = 0; i < sizeof(frequencies) / sizeof(frequencies[0]); ++i) {
+            if (key == static_cast<uint32_t>(keys[i])) {
+                piano_error_.clear();
+                ui_sound_.play_tone(frequencies[i], 50);
+                show_piano();
+                break;
+            }
+        }
+        return true;
+    }
+
+    void start_gallery_image(const std::filesystem::path& path, bool album_art = false) {
         if (gallery_task_) {
             file_notice_ = "Previous image read is stopping";
             show_file_browser();
@@ -813,10 +1500,11 @@ private:
         auto task = std::make_shared<GalleryQueryState>();
         gallery_task_ = task;
         try {
-            gallery_thread_ = std::thread([task, path] {
+            gallery_thread_ = std::thread([task, path, album_art] {
                 platform::GalleryImage result;
                 try {
-                    result = platform::read_gallery_image(path, &task->cancelled);
+                    result = album_art ? platform::read_album_art(path, &task->cancelled)
+                                       : platform::read_gallery_image(path, &task->cancelled);
                 } catch (const std::exception& error) {
                     result.error = std::string("Image read failed: ") + error.what();
                 }
@@ -832,6 +1520,39 @@ private:
         }
         gallery_loading_ = true;
         toast_->show_persistent("Opening image...\nESC cancels");
+    }
+
+    void start_camera_capture() {
+        if (gallery_task_) {
+            camera_confirm_ = false;
+            toast_->show("Previous image task is stopping",
+                         view::widgets::ToastTone::Warning, 3200);
+            return;
+        }
+        auto task = std::make_shared<GalleryQueryState>();
+        task->camera = true;
+        gallery_task_ = task;
+        camera_confirm_ = false;
+        try {
+            gallery_thread_ = std::thread([task] {
+                platform::GalleryImage result;
+                try {
+                    result = platform::capture_camera(task->cancelled);
+                } catch (const std::exception& error) {
+                    result.error = std::string("Camera capture failed: ") + error.what();
+                }
+                std::lock_guard<std::mutex> lock(task->mutex);
+                task->result = std::move(result);
+                task->complete = true;
+            });
+        } catch (const std::system_error& error) {
+            gallery_task_.reset();
+            toast_->show("Could not start camera: " + error.code().message(),
+                         view::widgets::ToastTone::Error, 4200);
+            return;
+        }
+        gallery_loading_ = true;
+        toast_->show_persistent("Camera active\nCapturing one snapshot\nESC cancels; no image saved");
     }
 
     void update_gallery_image() {
@@ -854,10 +1575,16 @@ private:
         }
         gallery_loading_ = false;
         if (!task->result.error.empty()) {
-            file_notice_ = task->result.error;
-            show_file_browser();
+            if (task->camera) {
+                toast_->show("Camera: " + task->result.error,
+                             view::widgets::ToastTone::Error, 5000);
+            } else {
+                file_notice_ = task->result.error;
+                show_file_browser();
+            }
             return;
         }
+        gallery_camera_ = task->camera;
         gallery_pixels_ = std::move(task->result.pixels);
         gallery_image_ = {};
         gallery_image_.header.magic = LV_IMAGE_HEADER_MAGIC;
@@ -870,16 +1597,24 @@ private:
         visual_tool_mode_ = VisualToolMode::Gallery;
         if (!create_visual_overlay()) {
             close_visual_tool();
-            file_notice_ = "Could not open image viewer";
-            show_file_browser();
+            if (task->camera) {
+                toast_->show("Could not open image viewer", view::widgets::ToastTone::Error, 4200);
+            } else {
+                file_notice_ = "Could not open image viewer";
+                show_file_browser();
+            }
             return;
         }
         lv_obj_set_style_bg_color(overlay_, lv_color_black(), 0);
         auto* image = lv_image_create(overlay_);
         if (!image) {
             close_visual_tool();
-            file_notice_ = "Could not create image viewer";
-            show_file_browser();
+            if (task->camera) {
+                toast_->show("Could not create image viewer", view::widgets::ToastTone::Error, 4200);
+            } else {
+                file_notice_ = "Could not create image viewer";
+                show_file_browser();
+            }
             return;
         }
         lv_image_set_src(image, &gallery_image_);
@@ -2178,20 +2913,56 @@ private:
     }
 
     bool handle_key(uint32_t key, bool long_pressed) {
+        if (boot_splash_.active()) {
+            if (!long_pressed) {
+                boot_splash_.finish();
+            }
+            return true;
+        }
+        if (help_popup_->visible()) {
+            if (!long_pressed && (key == LV_KEY_ESC || key == LV_KEY_ENTER ||
+                                  key == platform::kKeyHelp || key == '?')) {
+                help_popup_->hide();
+            }
+            return true;
+        }
         if (gallery_loading_) {
             if (!long_pressed && key == LV_KEY_ESC) {
                 gallery_task_->cancelled = true;
                 gallery_loading_ = false;
-                show_file_browser();
+                if (gallery_task_->camera) {
+                    toast_->hide();
+                } else {
+                    show_file_browser();
+                }
+            }
+            return true;
+        }
+        if (camera_confirm_) {
+            if (!long_pressed && key == LV_KEY_ENTER) {
+                start_camera_capture();
+            } else if (!long_pressed && key == LV_KEY_ESC) {
+                camera_confirm_ = false;
+                toast_->hide();
             }
             return true;
         }
         if (visual_tool_mode_ == VisualToolMode::Gallery) {
             if (!long_pressed && key == LV_KEY_ESC) {
                 close_visual_tool();
-                show_file_browser();
+                if (!gallery_camera_) show_file_browser();
+                gallery_camera_ = false;
             }
             return true;
+        }
+        if (music_active_) {
+            return handle_music_key(key, long_pressed);
+        }
+        if (piano_active_) {
+            return handle_piano_key(key, long_pressed);
+        }
+        if (microphone_active_) {
+            return handle_microphone_key(key, long_pressed);
         }
         if (file_browser_active_) {
             return handle_file_browser_key(key, long_pressed);
@@ -2201,6 +2972,12 @@ private:
         }
         if (arp_active_) {
             return handle_arp_key(key, long_pressed);
+        }
+        if (wifi_active_) {
+            return handle_wifi_key(key, long_pressed);
+        }
+        if (ir_active_) {
+            return handle_ir_key(key, long_pressed);
         }
         if (usb_sim_active_) {
             return handle_usb_sim_key(key, long_pressed);
@@ -2280,6 +3057,24 @@ private:
         }
 
         if (view_model_.current_page() != model::AppPage::Apple) {
+            if (view_model_.current_page() == model::AppPage::Wireless) {
+                if (key == LV_KEY_NEXT || key == LV_KEY_PREV) {
+                    if (!long_pressed) {
+                        const int32_t selection = view_model_.tool_selection();
+                        view_model_.set_tool_selection(
+                            selection < model::kWirelessReferenceItemCount
+                                ? model::kWirelessReferenceItemCount : 0);
+                    }
+                    return true;
+                }
+                const int32_t reference_index = model::wireless_reference_shortcut(key);
+                if (reference_index >= 0) {
+                    if (!long_pressed) {
+                        view_model_.set_tool_selection(reference_index);
+                    }
+                    return true;
+                }
+            }
             if (key == LV_KEY_UP || key == 'f') {
                 if (!long_pressed) {
                     if (!view_model_.grid_layout() || view_model_.tool_selection() >= 2) {
@@ -2291,12 +3086,7 @@ private:
             if (key == LV_KEY_DOWN || key == 'x') {
                 if (!long_pressed) {
                     const int32_t selection = view_model_.tool_selection();
-                    const int32_t count =
-                        view_model_.current_page() == model::AppPage::Tools
-                            ? model::kToolsPageItemCount
-                            : view_model_.current_page() == model::AppPage::Butter
-                                  ? model::kSystemToolItemCount
-                                  : model::kStandardToolItemCount;
+                    const int32_t count = model::tool_item_count(view_model_.current_page());
                     if (!view_model_.grid_layout() || selection + 2 < count) {
                         view_model_.move_tool_selection(view_model_.grid_layout() ? 2 : 1);
                     }
@@ -2448,7 +3238,19 @@ private:
                         return true;
                     }
                     if (view_model_.current_page() == model::AppPage::Wireless) {
-                        switch (view_model_.tool_selection()) {
+                        const int32_t selection = view_model_.tool_selection();
+                        if (selection == 0) {
+                            start_wifi_scan();
+                            return true;
+                        }
+                        if (selection < model::kWirelessReferenceItemCount) {
+                            toast_->show("Reference tool unavailable\nNo radio action is run",
+                                         view::widgets::ToastTone::Warning, 3200);
+                            return true;
+                        }
+                        const int32_t wireless_selection =
+                            selection - model::kWirelessReferenceItemCount;
+                        switch (wireless_selection) {
                             case 0:
                             case 1:
                                 show_system_status(1);
@@ -2459,16 +3261,29 @@ private:
                             case 3:
                                 start_gatt_scan();
                                 break;
+                            case 5:
+                                start_wifi_scan();
+                                break;
                             default:
                                 show_feature_status(platform::wireless_features(),
-                                                    view_model_.tool_selection());
+                                                    wireless_selection);
                                 break;
                         }
                         return true;
                     }
                     if (view_model_.current_page() == model::AppPage::Infrared) {
-                        show_feature_status(platform::infrared_features(),
-                                            view_model_.tool_selection());
+                        if (view_model_.tool_selection() == 0 ||
+                            view_model_.tool_selection() == 6) {
+                            if (!ir_task_) {
+                                ir_learning_ = view_model_.tool_selection() == 6;
+                                ir_result_ = {};
+                                ir_selection_ = 0;
+                            }
+                            start_ir_receive();
+                        } else {
+                            show_feature_status(platform::infrared_features(),
+                                                view_model_.tool_selection());
+                        }
                         return true;
                     }
                     if (view_model_.current_page() == model::AppPage::Expansion) {
@@ -2487,6 +3302,33 @@ private:
                         return true;
                     }
                     if (view_model_.current_page() == model::AppPage::Media) {
+                        if (view_model_.tool_selection() == 0) {
+                            camera_confirm_ = true;
+                            toast_->show_persistent("Camera snapshot\nImage stays in memory\nENTER capture  ESC back");
+                            return true;
+                        }
+                        if (view_model_.tool_selection() == 1) {
+                            start_microphone_test(true);
+                            return true;
+                        }
+                        if (view_model_.tool_selection() == 2) {
+                            start_file_browser(FileMode::Music);
+                            return true;
+                        }
+                        if (view_model_.tool_selection() == 3) {
+                            piano_active_ = true;
+                            piano_error_.clear();
+                            show_piano();
+                            return true;
+                        }
+                        if (view_model_.tool_selection() == 4) {
+                            start_file_browser(FileMode::AlbumArt);
+                            return true;
+                        }
+                        if (view_model_.tool_selection() == 5) {
+                            start_microphone_test();
+                            return true;
+                        }
                         if (view_model_.tool_selection() == 6) {
                             ui_sound_.retry();
                             ui_sound_.play(50);
@@ -2495,7 +3337,7 @@ private:
                             return true;
                         }
                         if (view_model_.tool_selection() == 7) {
-                            start_file_browser(true);
+                            start_file_browser(FileMode::Gallery);
                         } else {
                             show_feature_status(platform::media_features(),
                                                 view_model_.tool_selection());
@@ -2531,7 +3373,7 @@ private:
             return true;
         }
 
-        if (key == platform::kKeyHelp) {
+        if (key == platform::kKeyHelp || key == '?') {
             if (!long_pressed) {
                 toast_->hide();
                 if (help_popup_->visible()) {
@@ -2540,13 +3382,6 @@ private:
                 else {
                     help_popup_->show(view_model_.current_page());
                 }
-            }
-            return true;
-        }
-
-        if (help_popup_->visible()) {
-            if (key == LV_KEY_ESC && !long_pressed) {
-                help_popup_->hide();
             }
             return true;
         }
@@ -2596,7 +3431,9 @@ private:
 
     static void pointer_sound_listener(lv_event_t* event) {
         auto* controller = static_cast<ShortcutController*>(lv_event_get_user_data(event));
-        if (controller && controller->theme_persistence_.config.sound_enabled) {
+        if (controller && !controller->music_active_ && !controller->piano_active_ &&
+            !controller->microphone_active_ &&
+            controller->theme_persistence_.config.sound_enabled) {
             controller->ui_sound_.play(controller->theme_persistence_.config.sound_volume);
         }
     }
@@ -2606,7 +3443,9 @@ private:
                                     bool long_pressed,
                                     void* user_data) {
         auto* controller = static_cast<ShortcutController*>(user_data);
-        if (controller && !long_pressed && controller->theme_persistence_.config.sound_enabled) {
+        if (controller && !controller->music_active_ && !controller->piano_active_ &&
+            !controller->microphone_active_ && !long_pressed &&
+            controller->theme_persistence_.config.sound_enabled) {
             controller->ui_sound_.play(controller->theme_persistence_.config.sound_volume);
         }
         return controller && controller->handle_key(key, long_pressed);
@@ -2621,13 +3460,27 @@ private:
 
     viewmodel::BaseViewModel& view_model_;
     ThemePersistence& theme_persistence_;
+    BootSplash& boot_splash_;
     platform::UiSound ui_sound_;
     std::unique_ptr<view::widgets::Toast> toast_;
     std::unique_ptr<view::widgets::HelpPopup> help_popup_;
     std::string text_tool_buffer_;
     TextToolMode text_tool_mode_{TextToolMode::None};
     bool file_browser_active_{false};
-    bool file_gallery_mode_{false};
+    FileMode file_mode_{FileMode::Files};
+    bool music_active_{false};
+    bool piano_active_{false};
+    std::string piano_error_;
+    bool microphone_active_{false};
+    bool microphone_confirm_{false};
+    bool microphone_recording_mode_{false};
+    bool microphone_ready_{false};
+    std::vector<int16_t> microphone_samples_;
+    std::shared_ptr<MicrophoneTask> microphone_task_;
+    std::thread microphone_thread_;
+    platform::MusicState music_state_{platform::MusicState::Stopped};
+    std::string music_name_;
+    std::string music_error_;
     std::filesystem::path file_directory_;
     std::vector<platform::FileEntry> file_entries_;
     std::size_t file_selection_{0};
@@ -2637,6 +3490,8 @@ private:
     std::shared_ptr<FileQueryState> file_task_;
     std::thread file_thread_;
     bool gallery_loading_{false};
+    bool gallery_camera_{false};
+    bool camera_confirm_{false};
     std::shared_ptr<GalleryQueryState> gallery_task_;
     std::thread gallery_thread_;
     std::vector<uint8_t> gallery_pixels_;
@@ -2651,6 +3506,20 @@ private:
     bool arp_truncated_{false};
     std::vector<platform::ArpEntry> arp_entries_;
     std::size_t arp_selection_{0};
+    std::shared_ptr<WifiTask> wifi_task_;
+    std::thread wifi_thread_;
+    platform::WifiScanResult wifi_result_;
+    std::size_t wifi_selection_{0};
+    bool wifi_active_{false};
+    bool wifi_scanning_{false};
+    std::shared_ptr<IrTask> ir_task_;
+    std::thread ir_thread_;
+    platform::IrReceiveResult ir_result_;
+    std::size_t ir_selection_{0};
+    bool ir_active_{false};
+    bool ir_receiving_{false};
+    bool ir_learning_{false};
+    std::string ir_notice_;
     std::shared_ptr<GattTask> gatt_task_;
     std::thread gatt_thread_;
     GattStage gatt_stage_{GattStage::None};
@@ -2800,7 +3669,11 @@ int Application::run() {
     theme_persistence.config.theme_id = static_cast<int32_t>(view_model.theme_id());
     theme_persistence.config.theme_id_set = true;
     theme_persistence.config.dark_mode = view_model.is_dark_mode();
-    ShortcutController shortcuts(view_model, assets, theme_persistence);
+    BootSplash boot_splash(assets);
+    ShortcutController shortcuts(view_model, assets, theme_persistence, boot_splash);
+    if (!store_capture_mode) {
+        boot_splash.start(config.reduced_motion);
+    }
 
     auto* dark_mode_observer =
         store_capture_mode
@@ -2825,6 +3698,7 @@ int Application::run() {
 #endif
     ) {
         lv_timer_handler();
+        boot_splash.update();
         shortcuts.update();
         if (store_capture_mode && ++settled_frames >= 20) {
             const auto capture = platform::screenshot::capture_active_screen();

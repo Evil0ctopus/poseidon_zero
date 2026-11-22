@@ -1,8 +1,9 @@
 #include "gallery.h"
 
 #include <png.h>
-#include <unistd.h>
 
+#include <chrono>
+#include <cstdio>
 #include <filesystem>
 #include <fstream>
 #include <iostream>
@@ -10,10 +11,26 @@
 
 namespace fs = std::filesystem;
 
+bool write_png(const fs::path& path, png_image& image, const std::vector<uint8_t>& pixels) {
+#if defined(_WIN32)
+    FILE* file = _wfopen(path.c_str(), L"wb");
+#else
+    FILE* file = std::fopen(path.c_str(), "wb");
+#endif
+    if (!file) return false;
+    const bool success = png_image_write_to_stdio(&image, file, 0, pixels.data(), 0, nullptr) != 0;
+    return std::fclose(file) == 0 && success;
+}
+
 int main() {
-    char directory[] = "/tmp/poseidon-gallery-XXXXXX";
-    if (!mkdtemp(directory)) return 1;
-    const fs::path root(directory);
+    const auto unique_part = std::chrono::steady_clock::now().time_since_epoch().count();
+    const fs::path root = fs::temp_directory_path() /
+        fs::u8path(std::string(u8"poseidon-gallery-\u03a9-") + std::to_string(unique_part));
+    std::error_code create_error;
+    if (!fs::create_directory(root, create_error)) {
+        std::cerr << "Cannot create test directory: " << create_error.message() << '\n';
+        return 1;
+    }
     auto cleanup = [&] {
         fs::remove(root / "a.png");
         fs::remove(root / "b.PNG");
@@ -37,7 +54,7 @@ int main() {
         pixels[i] = 255;
         pixels[i + 3] = 255;
     }
-    if (!png_image_write_to_file(&png, (root / "b.PNG").c_str(), 0, pixels.data(), 0, nullptr))
+    if (!write_png(root / "b.PNG", png, pixels))
         return fail("Cannot create test PNG");
     fs::copy_file(root / "b.PNG", root / "a.png");
     std::ofstream(root / "ignored.txt") << "ignored";
@@ -46,7 +63,7 @@ int main() {
     if (!platform::list_gallery_images(root, files, error) || files.size() != 2 ||
         files[0].filename() != "a.png" || files[1].filename() != "b.PNG")
         return fail("PNG listing or ordering failed");
-    platform::GalleryImage image;
+    platform::GalleryThumbnail image;
     if (!platform::load_gallery_image(files[0], image, error) ||
         image.width != 280 || image.height != 140 || image.bgra.size() != 280 * 140 * 4 ||
         image.bgra[0] != 0 || image.bgra[1] != 0 || image.bgra[2] != 255 ||
@@ -59,7 +76,7 @@ int main() {
     png.width = 1025;
     png.height = 1;
     pixels.assign(1025 * 4, 255);
-    if (!png_image_write_to_file(&png, (root / "big.png").c_str(), 0, pixels.data(), 0, nullptr))
+    if (!write_png(root / "big.png", png, pixels))
         return fail("Cannot create oversized test PNG");
     if (platform::load_gallery_image(root / "big.png", image, error) || error.empty())
         return fail("Oversized PNG must fail");

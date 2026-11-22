@@ -4,6 +4,8 @@
 
 #include <algorithm>
 #include <cctype>
+#include <cstdio>
+#include <memory>
 #include <system_error>
 
 namespace platform {
@@ -44,7 +46,7 @@ bool list_gallery_images(const std::filesystem::path& directory,
     return true;
 }
 
-bool load_gallery_image(const std::filesystem::path& path, GalleryImage& image,
+bool load_gallery_image(const std::filesystem::path& path, GalleryThumbnail& image,
                         std::string& error) {
     image = {};
     error.clear();
@@ -56,7 +58,16 @@ bool load_gallery_image(const std::filesystem::path& path, GalleryImage& image,
     }
     png_image png{};
     png.version = PNG_IMAGE_VERSION;
-    if (!png_image_begin_read_from_file(&png, path.string().c_str())) {
+#if defined(_WIN32)
+    std::unique_ptr<FILE, decltype(&std::fclose)> file(_wfopen(path.c_str(), L"rb"), &std::fclose);
+#else
+    std::unique_ptr<FILE, decltype(&std::fclose)> file(std::fopen(path.c_str(), "rb"), &std::fclose);
+#endif
+    if (!file) {
+        error = "Cannot open PNG";
+        return false;
+    }
+    if (!png_image_begin_read_from_stdio(&png, file.get())) {
         error = std::string("Cannot open PNG: ") + png.message;
         png_image_free(&png);
         return false;

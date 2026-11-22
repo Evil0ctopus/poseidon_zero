@@ -680,8 +680,37 @@ if(NOT USE_DESKTOP AND BUILD_TESTING)
     target_compile_definitions(poseidon_bluetooth_gatt_bluez_tests PRIVATE USE_DESKTOP=0)
     target_link_libraries(poseidon_bluetooth_gatt_bluez_tests PRIVATE PkgConfig::CM0_GIO)
     add_test(NAME bluetooth-gatt-bluez COMMAND poseidon_bluetooth_gatt_bluez_tests)
+
+    add_executable(poseidon_camera_capture_tests
+        tests/camera_capture_linux_test.cpp
+        src/platform/camera_capture.cpp
+        src/platform/gallery_jpeg.c
+    )
+    target_include_directories(poseidon_camera_capture_tests
+        PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/src/platform"
+    )
+    target_compile_definitions(poseidon_camera_capture_tests PRIVATE USE_DESKTOP=0 POSEIDON_TEST_CAMERA=1)
+    target_link_libraries(poseidon_camera_capture_tests PRIVATE CM0::JPEG Threads::Threads)
+    add_test(NAME camera-capture COMMAND poseidon_camera_capture_tests)
 endif()
 if(USE_DESKTOP AND BUILD_TESTING)
+    add_executable(poseidon_music_playback_tests
+        tests/music_playback_test.cpp
+        src/platform/microphone.cpp
+        src/platform/unique_file.cpp
+        src/platform/ui_sound.cpp
+    )
+    target_include_directories(poseidon_music_playback_tests PRIVATE
+        "${CMAKE_CURRENT_SOURCE_DIR}/src/platform"
+        "${miniaudio_SOURCE_DIR}"
+    )
+    target_compile_definitions(poseidon_music_playback_tests PRIVATE POSEIDON_TEST_NULL_AUDIO=1)
+    target_link_libraries(poseidon_music_playback_tests PRIVATE Threads::Threads ${CMAKE_DL_LIBS})
+    if(UNIX)
+        target_link_libraries(poseidon_music_playback_tests PRIVATE m)
+    endif()
+    add_test(NAME music-playback COMMAND poseidon_music_playback_tests)
+
     add_executable(poseidon_bluetooth_gatt_desktop_tests
         tests/bluetooth_gatt_desktop_test.cpp
         src/platform/bluetooth_gatt.cpp
@@ -725,11 +754,15 @@ if(USE_DESKTOP AND BUILD_TESTING)
 
     add_executable(poseidon_safe_tools_tests
         tests/safe_tools_test.cpp
+        src/platform/camera_capture.cpp
         src/platform/gallery_image.cpp
         src/platform/gallery_jpeg.c
+        src/platform/ir_receive.cpp
+        src/platform/unique_file.cpp
         src/platform/linux_network.cpp
         src/platform/safe_tools.cpp
         src/platform/tool_status.cpp
+        src/platform/wifi_scan.cpp
     )
     target_include_directories(poseidon_safe_tools_tests
         PRIVATE

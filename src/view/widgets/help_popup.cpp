@@ -22,19 +22,27 @@ struct HelpRow {
 };
 
 constexpr std::array<HelpRow, 5> kAppleRows = {{
-    {"ARROWS", "Select; ENTER opens"},
-    {"4 / HOLD ESC", "Exit"},
-    {"5", "Text weight"},
-    {"6", "Light / dark theme"},
-    {"7 / 8", "Info / system status"},
+    {"ARROWS", "Move"},
+    {"ENTER", "Open"},
+    {"4 / ESC", "Hold to exit"},
+    {"5 / 6", "Text / theme"},
+    {"7 / 8", "Info / system"},
 }};
 
 constexpr std::array<HelpRow, 5> kMenuRows = {{
-    {"UP / DOWN", "Select previous / next"},
-    {"Z / LEFT", "Select previous"},
-    {"C / RIGHT", "Select next"},
-    {"ENTER", "Open / activate"},
+    {"UP / DOWN", "Move"},
+    {"Z / C", "Prev / next"},
+    {"ENTER", "Open"},
     {"ESC", "Back"},
+    {"HELP", "Close help"},
+}};
+
+constexpr std::array<HelpRow, 5> kWirelessRows = {{
+    {"UP / DOWN", "Move"},
+    {"Z / C", "Prev / next"},
+    {"LETTER", "Jump"},
+    {"TAB", "Switch lists"},
+    {"ENTER", "Open"},
 }};
 
 } // namespace
@@ -60,19 +68,15 @@ void HelpPopup::build() {
 
     panel_ = lv_obj_create(core_obj_);
     lv_obj_remove_style_all(panel_);
-    lv_obj_set_size(panel_, 292, 146);
+    lv_obj_set_size(panel_, 320, 170);
     lv_obj_center(panel_);
-    lv_obj_set_style_radius(panel_, 6, 0);
     lv_obj_set_style_bg_opa(panel_, LV_OPA_COVER, 0);
-    lv_obj_set_style_border_width(panel_, 1, 0);
-    lv_obj_set_style_shadow_width(panel_, 14, 0);
-    lv_obj_set_style_shadow_opa(panel_, LV_OPA_20, 0);
     lv_obj_set_style_pad_all(panel_, 0, 0);
     lv_obj_clear_flag(panel_, LV_OBJ_FLAG_SCROLLABLE);
     lv_obj_add_flag(panel_, LV_OBJ_FLAG_CLICKABLE);
 
     title_ = lv_label_create(panel_);
-    lv_label_set_text(title_, "Keyboard help");
+    lv_label_set_text(title_, "HELP");
     auto* title_font = assets_.load_standard_font(15);
     lv_obj_set_style_text_font(title_, title_font ? title_font : &lv_font_montserrat_14, 0);
     lv_obj_align(title_, LV_ALIGN_TOP_LEFT, 12, 9);
@@ -80,15 +84,34 @@ void HelpPopup::build() {
     page_badge_ = lv_label_create(panel_);
     auto* badge_font = assets_.load_standard_font(11);
     lv_obj_set_style_text_font(page_badge_, badge_font ? badge_font : &lv_font_montserrat_12, 0);
-    lv_obj_set_style_radius(page_badge_, 3, 0);
-    lv_obj_set_style_pad_hor(page_badge_, 6, 0);
-    lv_obj_set_style_pad_ver(page_badge_, 2, 0);
-    lv_obj_align(page_badge_, LV_ALIGN_TOP_RIGHT, -10, 7);
+    lv_obj_align(page_badge_, LV_ALIGN_TOP_RIGHT, -12, 10);
+
+    rule_ = lv_obj_create(panel_);
+    lv_obj_remove_style_all(rule_);
+    lv_obj_set_size(rule_, 296, 1);
+    lv_obj_align(rule_, LV_ALIGN_TOP_MID, 0, 29);
+    lv_obj_set_style_bg_opa(rule_, LV_OPA_70, 0);
+
+    keys_heading_ = lv_label_create(panel_);
+    lv_label_set_text(keys_heading_, "KEYS");
+    lv_obj_set_style_text_font(keys_heading_, &lv_font_montserrat_10, 0);
+    lv_obj_align(keys_heading_, LV_ALIGN_TOP_LEFT, 12, 36);
+
+    legend_heading_ = lv_label_create(panel_);
+    lv_label_set_text(legend_heading_, "LEGEND");
+    lv_obj_set_style_text_font(legend_heading_, &lv_font_montserrat_10, 0);
+    lv_obj_align(legend_heading_, LV_ALIGN_TOP_LEFT, 170, 36);
+
+    legend_ = lv_label_create(panel_);
+    lv_label_set_text(legend_, "Available   Working\n[OFF]       Unavailable\n\n? / ESC  Close");
+    lv_obj_set_style_text_font(legend_, &lv_font_montserrat_10, 0);
+    lv_obj_set_style_text_line_space(legend_, 3, 0);
+    lv_obj_align(legend_, LV_ALIGN_TOP_LEFT, 170, 52);
 
     auto* rows = lv_obj_create(panel_);
     lv_obj_remove_style_all(rows);
-    lv_obj_set_size(rows, 268, 88);
-    lv_obj_align(rows, LV_ALIGN_TOP_MID, 0, 35);
+    lv_obj_set_size(rows, 152, 86);
+    lv_obj_align(rows, LV_ALIGN_TOP_LEFT, 12, 51);
     lv_obj_set_flex_flow(rows, LV_FLEX_FLOW_COLUMN);
     lv_obj_set_flex_align(rows, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_START);
     lv_obj_set_style_pad_row(rows, 1, 0);
@@ -103,13 +126,15 @@ void HelpPopup::build() {
         lv_obj_clear_flag(widgets.row, LV_OBJ_FLAG_SCROLLABLE);
 
         widgets.key = lv_label_create(widgets.row);
-        lv_obj_set_width(widgets.key, 82);
+        lv_obj_set_width(widgets.key, 76);
+        lv_label_set_long_mode(widgets.key, LV_LABEL_LONG_CLIP);
         lv_obj_set_style_text_font(widgets.key, key_font ? key_font : &lv_font_montserrat_12, 0);
         lv_obj_set_style_text_align(widgets.key, LV_TEXT_ALIGN_LEFT, 0);
         lv_obj_align(widgets.key, LV_ALIGN_LEFT_MID, 0, 0);
 
         widgets.action = lv_label_create(widgets.row);
-        lv_obj_set_width(widgets.action, 176);
+        lv_obj_set_width(widgets.action, 76);
+        lv_label_set_long_mode(widgets.action, LV_LABEL_LONG_CLIP);
         lv_obj_set_style_text_font(widgets.action,
                                    action_font ? action_font : &lv_font_montserrat_12,
                                    0);
@@ -117,13 +142,13 @@ void HelpPopup::build() {
     }
 
     footer_ = lv_label_create(panel_);
-    lv_label_set_text(footer_, "HELP / ESC  Close   PRSC  Screenshot");
+    lv_label_set_text(footer_, "Local tools may use network. Authorized use only.");
     lv_label_set_long_mode(footer_, LV_LABEL_LONG_CLIP);
     auto* footer_font = assets_.load_standard_font(10);
     lv_obj_set_style_text_font(footer_, footer_font ? footer_font : &lv_font_montserrat_10, 0);
     lv_obj_set_style_text_align(footer_, LV_TEXT_ALIGN_LEFT, 0);
     lv_obj_set_size(footer_, LV_SIZE_CONTENT, 12);
-    lv_obj_align(footer_, LV_ALIGN_BOTTOM_LEFT, 12, -7);
+    lv_obj_align(footer_, LV_ALIGN_BOTTOM_LEFT, 12, -10);
 
     lv_subject_add_observer_obj(view_model_.theme_id_subject(),
                                 theme_observer_cb,
@@ -159,36 +184,10 @@ bool HelpPopup::visible() const {
 
 void HelpPopup::update_rows(model::AppPage page) {
     const bool home = page == model::AppPage::Apple;
-    const char* badge = "MENU";
-    switch (page) {
-        case model::AppPage::Apple:
-            badge = "HOME";
-            break;
-        case model::AppPage::Butter:
-            badge = "SYSTEM";
-            break;
-        case model::AppPage::Network:
-            badge = "NETWORK";
-            break;
-        case model::AppPage::Wireless:
-            badge = "WIRELESS";
-            break;
-        case model::AppPage::Infrared:
-            badge = "INFRARED";
-            break;
-        case model::AppPage::Expansion:
-            badge = "EXPANSION";
-            break;
-        case model::AppPage::Tools:
-            badge = "TOOLS";
-            break;
-        case model::AppPage::Media:
-            badge = "MEDIA";
-            break;
-    }
-    lv_label_set_text(page_badge_, badge);
+    lv_label_set_text(page_badge_, "? / ENTER / ESC to close");
     for (std::size_t i = 0; i < rows_.size(); ++i) {
-        const auto& help_rows = home ? kAppleRows : kMenuRows;
+        const auto& help_rows = home ? kAppleRows
+                                : page == model::AppPage::Wireless ? kWirelessRows : kMenuRows;
         const bool row_visible = i < help_rows.size();
         if (!row_visible) {
             lv_obj_add_flag(rows_[i].row, LV_OBJ_FLAG_HIDDEN);
@@ -199,6 +198,9 @@ void HelpPopup::update_rows(model::AppPage page) {
         lv_label_set_text(rows_[i].key, row.key);
         lv_label_set_text(rows_[i].action, row.action);
     }
+    lv_label_set_text(footer_, page == model::AppPage::Wireless
+                                   ? "ESC back; Shift+C/X/Z jump; authorized use."
+                                   : "Local tools may use network. Authorized use only.");
 }
 
 void HelpPopup::apply_theme() {
@@ -206,14 +208,15 @@ void HelpPopup::apply_theme() {
         return;
     }
     const auto colors = view::palette(view_model_.theme_id());
-    lv_obj_set_style_bg_color(panel_, colors.surface, 0);
-    lv_obj_set_style_border_color(panel_, colors.border, 0);
-    lv_obj_set_style_shadow_color(panel_, lv_color_black(), 0);
-    lv_obj_set_style_text_color(title_, colors.text, 0);
-    lv_obj_set_style_bg_color(page_badge_, colors.primary, 0);
-    lv_obj_set_style_bg_opa(page_badge_, LV_OPA_20, 0);
-    lv_obj_set_style_text_color(page_badge_, colors.primary, 0);
-    lv_obj_set_style_text_color(footer_, colors.text_disabled, 0);
+    lv_obj_set_style_bg_color(panel_, colors.background, 0);
+    lv_obj_set_style_text_color(title_, colors.primary, 0);
+    lv_obj_set_style_bg_color(rule_, colors.info, 0);
+    lv_obj_set_style_text_color(page_badge_, colors.text, 0);
+    lv_obj_set_style_text_opa(page_badge_, LV_OPA_70, 0);
+    lv_obj_set_style_text_color(keys_heading_, colors.primary, 0);
+    lv_obj_set_style_text_color(legend_heading_, colors.success, 0);
+    lv_obj_set_style_text_color(legend_, colors.text, 0);
+    lv_obj_set_style_text_color(footer_, colors.success, 0);
     for (auto& row : rows_) {
         lv_obj_set_style_text_color(row.key, colors.primary, 0);
         lv_obj_set_style_text_color(row.action, colors.text, 0);
