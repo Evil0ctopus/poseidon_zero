@@ -28,6 +28,11 @@ enum class IrSampleStatus {
 IrSampleStatus append_ir_sample(IrReceiveResult& result, uint32_t value);
 IrReceiveResult receive_ir(const std::atomic_bool& cancelled);
 
+#if defined(POSEIDON_TEST_IR) && !USE_DESKTOP
+IrReceiveResult receive_ir_test(int fd, const std::atomic_bool& cancelled,
+                                int timeout_ms, int idle_ms);
+#endif
+
 struct IrSaveResult {
     std::filesystem::path path;
     std::string error;

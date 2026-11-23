@@ -10,6 +10,7 @@
 #include <iostream>
 #include <string>
 #include <thread>
+#include <sys/stat.h>
 #include <unistd.h>
 
 namespace fs = std::filesystem;
@@ -60,15 +61,31 @@ int main() {
                   script(executable, "cat \"$(dirname \"$0\")/image.jpg\"");
     const std::atomic_bool running{false};
     if (passed) {
-        const auto image = platform::capture_camera_test(running, executable.c_str(), 5000);
+        std::vector<uint8_t> original;
+        const auto image = platform::capture_camera_test(running, executable.c_str(), 5000, &original);
+        std::ifstream source(image_path, std::ios::binary);
+        const std::vector<uint8_t> expected((std::istreambuf_iterator<char>(source)),
+                                            std::istreambuf_iterator<char>());
         if (!image.error.empty() || image.width != 2 || image.height != 1 ||
-            image.pixels.size() != 8 || image.pixels[2] < 200) {
+            image.pixels.size() != 8 || image.pixels[2] < 200 || original != expected) {
             std::cerr << "Camera fixture did not decode: " << image.error << '\n';
             passed = false;
         }
+        const auto saved = platform::save_camera_jpeg(root, original);
+        struct stat saved_stat{};
+        if (!saved.error.empty() || stat(saved.path.c_str(), &saved_stat) != 0 ||
+            (saved_stat.st_mode & 0777) != 0600) {
+            std::cerr << "Saved camera photo must be private: " << saved.error << '\n';
+            passed = false;
+        }
+        if (!saved.path.empty()) {
+            std::error_code remove_error;
+            fs::remove(saved.path, remove_error);
+            if (remove_error) passed = false;
+        }
         if (!script(executable, "echo 'camera denied' >&2; exit 1")) passed = false;
-        const auto failure = platform::capture_camera_test(running, executable.c_str(), 5000);
-        if (failure.error.find("camera denied") == std::string::npos) {
+        const auto failure = platform::capture_camera_test(running, executable.c_str(), 5000, &original);
+        if (failure.error.find("camera denied") == std::string::npos || !original.empty()) {
             std::cerr << "Camera process errors must be shown\n";
             passed = false;
         }

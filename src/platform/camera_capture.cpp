@@ -1,10 +1,33 @@
 #include "camera_capture.h"
+#include "unique_file.h"
+
+#include <cstdio>
+
+namespace platform {
+namespace {
+constexpr std::size_t kMaxJpeg = 8U * 1024U * 1024U;
+}
+
+CameraSaveResult save_camera_jpeg(const std::filesystem::path& directory,
+                                  const std::vector<uint8_t>& jpeg) {
+    if (jpeg.size() < 4 || jpeg.size() > kMaxJpeg || jpeg[0] != 0xff || jpeg[1] != 0xd8)
+        return {{}, "Invalid camera image"};
+    auto output = open_unique_file(directory, "poseidon-photo-", ".jpg");
+    if (!output.error.empty()) return {{}, output.error};
+    bool ok = std::fwrite(jpeg.data(), 1, jpeg.size(), output.stream.get()) == jpeg.size();
+    if (std::fclose(output.stream.release()) != 0) ok = false;
+    if (!ok) return {{}, "Could not write photo" + remove_incomplete_file(output.path)};
+    return {output.path, {}};
+}
+
+} // namespace platform
 
 #if USE_DESKTOP
 
 namespace platform {
 
-GalleryImage capture_camera(const std::atomic_bool& cancelled) {
+GalleryImage capture_camera(const std::atomic_bool& cancelled, std::vector<uint8_t>* jpeg) {
+    if (jpeg) jpeg->clear();
     if (cancelled) return {};
     return {0, 0, {}, "Camera capture requires a supported device"};
 }
@@ -35,7 +58,6 @@ extern char** environ;
 namespace platform {
 namespace {
 
-constexpr std::size_t kMaxJpeg = 8U * 1024U * 1024U;
 constexpr std::size_t kMaxError = 1024;
 
 class Descriptor {
@@ -108,7 +130,9 @@ std::string safe_error(const std::string& value) {
     return result;
 }
 
-GalleryImage capture(const std::atomic_bool& cancelled, const char* executable, int timeout_ms) {
+GalleryImage capture(const std::atomic_bool& cancelled, const char* executable, int timeout_ms,
+                     std::vector<uint8_t>* jpeg) {
+    if (jpeg) jpeg->clear();
     if (cancelled) return {};
     int image_pipe[2];
     if (pipe2(image_pipe, O_CLOEXEC) != 0)
@@ -218,19 +242,20 @@ GalleryImage capture(const std::atomic_bool& cancelled, const char* executable, 
     output.height = image.height;
     output.pixels.assign(pixels.get(), pixels.get() +
                          static_cast<std::size_t>(image.width) * image.height * 4U);
+    if (jpeg) *jpeg = std::move(bytes);
     return output;
 }
 
 } // namespace
 
-GalleryImage capture_camera(const std::atomic_bool& cancelled) {
-    return capture(cancelled, "/usr/bin/rpicam-still", 12000);
+GalleryImage capture_camera(const std::atomic_bool& cancelled, std::vector<uint8_t>* jpeg) {
+    return capture(cancelled, "/usr/bin/rpicam-still", 12000, jpeg);
 }
 
 #if defined(POSEIDON_TEST_CAMERA)
 GalleryImage capture_camera_test(const std::atomic_bool& cancelled, const char* executable,
-                                 int timeout_ms) {
-    return capture(cancelled, executable, timeout_ms);
+                                 int timeout_ms, std::vector<uint8_t>* jpeg) {
+    return capture(cancelled, executable, timeout_ms, jpeg);
 }
 #endif
 

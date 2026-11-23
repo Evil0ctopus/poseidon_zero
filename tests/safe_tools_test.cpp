@@ -484,6 +484,31 @@ int main() {
         std::cerr << "Gallery must decode JPEG pixels as opaque BGRA\n";
         passed = false;
     }
+    {
+        std::ifstream input(jpeg_path, std::ios::binary);
+        const std::vector<uint8_t> bytes((std::istreambuf_iterator<char>(input)),
+                                         std::istreambuf_iterator<char>());
+        const auto first = platform::save_camera_jpeg(temp, bytes);
+        const auto second = platform::save_camera_jpeg(temp, bytes);
+        auto padded_bytes = bytes;
+        padded_bytes.insert(padded_bytes.end(), {0, 0, 0});
+        const auto padded = platform::save_camera_jpeg(temp, padded_bytes);
+        std::ifstream saved(first.path, std::ios::binary);
+        const std::vector<uint8_t> saved_bytes((std::istreambuf_iterator<char>(saved)),
+                                               std::istreambuf_iterator<char>());
+        std::ifstream saved_padded(padded.path, std::ios::binary);
+        const std::vector<uint8_t> saved_padded_bytes(
+            (std::istreambuf_iterator<char>(saved_padded)), std::istreambuf_iterator<char>());
+        if (!first.error.empty() || !second.error.empty() || first.path == second.path ||
+            !padded.error.empty() || saved_padded_bytes != padded_bytes ||
+            !platform::read_gallery_image(padded.path).error.empty() ||
+            saved_bytes != bytes || !platform::read_gallery_image(first.path).error.empty() ||
+            platform::save_camera_jpeg(temp, {}).error.empty() ||
+            platform::save_camera_jpeg(temp / "missing", bytes).error.empty()) {
+            std::cerr << "Photo saving must preserve JPEG data, avoid overwrites, and report errors\n";
+            passed = false;
+        }
+    }
     if (!platform::read_gallery_image(boundary_jpeg).error.empty() ||
         platform::read_gallery_image(oversized_jpeg).error.empty()) {
         std::cerr << "Gallery must enforce the 1024-pixel JPEG dimension boundary\n";

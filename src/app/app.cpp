@@ -426,6 +426,7 @@ private:
         Gallery,
         Music,
         AlbumArt,
+        I2c,
     };
 
     struct NetworkQueryState {
@@ -451,6 +452,9 @@ private:
         platform::GalleryImage result;
         bool complete{false};
         bool camera{false};
+        bool saving{false};
+        std::vector<uint8_t> jpeg;
+        platform::CameraSaveResult save_result;
     };
 
     enum class GattStage {
@@ -762,6 +766,7 @@ private:
                       (ir_result_.truncated ? "+" : "") + "\n" +
                       (sample.pulse ? "Pulse " : "Space ") +
                       std::to_string(sample.duration_us) + " us";
+            if (ir_result_.truncated) message += "\nIncomplete; cannot save";
         }
         if (!ir_notice_.empty()) message += "\n" + file_display_text(ir_notice_, 30);
         message += ir_learning_
@@ -1213,6 +1218,23 @@ private:
     }
 
     void show_file_browser() {
+        if (file_mode_ == FileMode::I2c) {
+            std::string message = "I2C buses (read-only)";
+            if (!file_notice_.empty()) {
+                message += "\n" + file_display_text(file_notice_, 30);
+            } else if (file_entries_.empty()) {
+                message += "\nNo buses exposed";
+            } else {
+                message += "\nBus " + std::to_string(file_offset_ + file_selection_ + 1) +
+                           (file_truncated_ ? "+" : "") + ": " +
+                           file_display_text(file_entries_[file_selection_].name, 20);
+            }
+            message += "\nNo device probing or control\nUP/DOWN select  P/N page\nESC back";
+            toast_->show_persistent(message, file_notice_.empty()
+                                                 ? view::widgets::ToastTone::Default
+                                                 : view::widgets::ToastTone::Warning);
+            return;
+        }
         std::string folder = file_directory_.filename().u8string();
         if (folder.empty()) {
             folder = file_directory_.root_path().u8string();
@@ -1330,6 +1352,16 @@ private:
     }
 
     void start_file_browser(FileMode mode = FileMode::Files) {
+        if (mode == FileMode::I2c) {
+#if USE_DESKTOP
+            toast_->show("I2C bus listing is unavailable\nin the desktop simulator",
+                         view::widgets::ToastTone::Warning, 4200);
+#else
+            file_mode_ = mode;
+            open_file_directory("/sys/class/i2c-dev");
+#endif
+            return;
+        }
 #if USE_DESKTOP && defined(_WIN32)
         const wchar_t* home = _wgetenv(L"HOME");
 #else
@@ -1377,6 +1409,7 @@ private:
             return true;
         }
         if (key == LV_KEY_BACKSPACE || key == LV_KEY_DEL) {
+            if (file_mode_ == FileMode::I2c) return true;
             const auto parent = file_directory_.parent_path();
             if (!parent.empty() && parent != file_directory_) {
                 open_file_directory(parent);
@@ -1402,6 +1435,7 @@ private:
             }
         }
         else if (key == LV_KEY_ENTER && !file_entries_.empty()) {
+            if (file_mode_ == FileMode::I2c) return true;
             const auto& entry = file_entries_[file_selection_];
             const auto path = file_directory_ / std::filesystem::u8path(entry.name);
             if (entry.directory) {
@@ -1537,7 +1571,7 @@ private:
             gallery_thread_ = std::thread([task] {
                 platform::GalleryImage result;
                 try {
-                    result = platform::capture_camera(task->cancelled);
+                    result = platform::capture_camera(task->cancelled, &task->jpeg);
                 } catch (const std::exception& error) {
                     result.error = std::string("Camera capture failed: ") + error.what();
                 }
@@ -1555,6 +1589,48 @@ private:
         toast_->show_persistent("Camera active\nCapturing one snapshot\nESC cancels; no image saved");
     }
 
+    void save_camera_photo() {
+#if USE_DESKTOP && defined(_WIN32)
+        const wchar_t* home = _wgetenv(L"HOME");
+        if (!home || home[0] == L'\0') home = _wgetenv(L"USERPROFILE");
+#else
+        const char* home = std::getenv("HOME");
+#endif
+        if (!home || home[0] == 0 || !std::filesystem::path(home).is_absolute()) {
+            toast_->show("An absolute home directory is required",
+                         view::widgets::ToastTone::Error, 4200);
+            return;
+        }
+        const auto directory = std::filesystem::path(home) / "poseidon-photos";
+        auto task = std::make_shared<GalleryQueryState>();
+        task->camera = true;
+        task->saving = true;
+        task->jpeg = std::move(camera_jpeg_);
+        gallery_task_ = task;
+        toast_->show_persistent("Saving photo...\nPlease wait");
+        try {
+            gallery_thread_ = std::thread([task, directory] {
+                platform::CameraSaveResult result;
+                try {
+                    std::error_code error;
+                    std::filesystem::create_directory(directory, error);
+                    if (error) result.error = "Photo folder: " + error.message();
+                    else result = platform::save_camera_jpeg(directory, task->jpeg);
+                } catch (const std::exception& error) {
+                    result.error = std::string("Photo save failed: ") + error.what();
+                }
+                std::lock_guard<std::mutex> lock(task->mutex);
+                task->save_result = std::move(result);
+                task->complete = true;
+            });
+        } catch (const std::system_error& error) {
+            camera_jpeg_ = std::move(task->jpeg);
+            gallery_task_.reset();
+            toast_->show("Could not save: " + error.code().message(),
+                         view::widgets::ToastTone::Error, 4200);
+        }
+    }
+
     void update_gallery_image() {
         const auto task = gallery_task_;
         if (!task) {
@@ -1570,6 +1646,17 @@ private:
             gallery_thread_.join();
         }
         gallery_task_.reset();
+        if (task->saving) {
+            camera_jpeg_ = std::move(task->jpeg);
+            if (!task->save_result.error.empty()) {
+                toast_->show(task->save_result.error, view::widgets::ToastTone::Error, 5000);
+            } else {
+                toast_->show("Saved in poseidon-photos:\n" +
+                                 file_display_text(task->save_result.path.filename().u8string(), 28),
+                             view::widgets::ToastTone::Default, 5000);
+            }
+            return;
+        }
         if (task->cancelled || !gallery_loading_) {
             return;
         }
@@ -1585,6 +1672,7 @@ private:
             return;
         }
         gallery_camera_ = task->camera;
+        camera_jpeg_ = std::move(task->jpeg);
         gallery_pixels_ = std::move(task->result.pixels);
         gallery_image_ = {};
         gallery_image_.header.magic = LV_IMAGE_HEADER_MAGIC;
@@ -1623,7 +1711,7 @@ private:
                                          150U * 256U / task->result.height});
         lv_image_set_scale(image, scale);
         lv_obj_center(image);
-        lv_label_set_text(screen_test_label_, "ESC: back");
+        lv_label_set_text(screen_test_label_, task->camera ? "S: save  ESC: close" : "ESC: back");
         lv_obj_set_style_text_color(screen_test_label_, lv_color_white(), 0);
         lv_obj_align(screen_test_label_, LV_ALIGN_BOTTOM_MID, 0, -2);
         lv_obj_move_foreground(screen_test_label_);
@@ -2489,6 +2577,7 @@ private:
         if (visual_tool_mode_ == VisualToolMode::Gallery) {
             lv_image_cache_drop(&gallery_image_);
             gallery_pixels_.clear();
+            camera_jpeg_.clear();
         }
         visual_tool_mode_ = VisualToolMode::None;
     }
@@ -2948,6 +3037,13 @@ private:
             return true;
         }
         if (visual_tool_mode_ == VisualToolMode::Gallery) {
+            if (gallery_camera_ && gallery_task_ && gallery_task_->saving) {
+                return true;
+            }
+            if (!long_pressed && gallery_camera_ && (key == 's' || key == 'S')) {
+                save_camera_photo();
+                return true;
+            }
             if (!long_pressed && key == LV_KEY_ESC) {
                 close_visual_tool();
                 if (!gallery_camera_) show_file_browser();
@@ -3287,6 +3383,10 @@ private:
                         return true;
                     }
                     if (view_model_.current_page() == model::AppPage::Expansion) {
+                        if (view_model_.tool_selection() == 0) {
+                            start_file_browser(FileMode::I2c);
+                            return true;
+                        }
 #if USE_DESKTOP
                         if (view_model_.tool_selection() == 7) {
                             usb_sim_active_ = true;
@@ -3303,8 +3403,13 @@ private:
                     }
                     if (view_model_.current_page() == model::AppPage::Media) {
                         if (view_model_.tool_selection() == 0) {
+#if USE_DESKTOP
+                            toast_->show("Camera is unavailable\nin the desktop simulator",
+                                         view::widgets::ToastTone::Warning, 4200);
+#else
                             camera_confirm_ = true;
                             toast_->show_persistent("Camera snapshot\nImage stays in memory\nENTER capture  ESC back");
+#endif
                             return true;
                         }
                         if (view_model_.tool_selection() == 1) {
@@ -3495,6 +3600,7 @@ private:
     std::shared_ptr<GalleryQueryState> gallery_task_;
     std::thread gallery_thread_;
     std::vector<uint8_t> gallery_pixels_;
+    std::vector<uint8_t> camera_jpeg_;
     lv_image_dsc_t gallery_image_{};
     std::shared_ptr<NetworkQueryState> network_query_;
     std::thread network_thread_;

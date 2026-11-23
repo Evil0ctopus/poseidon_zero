@@ -98,6 +98,60 @@ std::string system_error(const std::string& action, int error) {
     return action + ": " + std::strerror(error);
 }
 
+IrReceiveResult read_ir_data(int fd, const std::atomic_bool& cancelled,
+                             std::chrono::milliseconds timeout,
+                             std::chrono::milliseconds idle) {
+    IrReceiveResult result;
+    const auto deadline = std::chrono::steady_clock::now() + timeout;
+    auto last_sample = std::chrono::steady_clock::now();
+    while (!cancelled && std::chrono::steady_clock::now() < deadline) {
+        pollfd event{fd, POLLIN, 0};
+        const int ready = poll(&event, 1, 100);
+        if (ready < 0) {
+            if (errno == EINTR) continue;
+            result.error = system_error("IR polling", errno);
+            break;
+        }
+        if (ready == 0) {
+            if (!result.samples.empty() &&
+                std::chrono::steady_clock::now() - last_sample >= idle) {
+                return result;
+            }
+            continue;
+        }
+        if (event.revents & (POLLERR | POLLHUP | POLLNVAL)) {
+            result.error = "IR receiver disconnected";
+            break;
+        }
+        uint32_t values[64];
+        const auto bytes = read(fd, values, sizeof(values));
+        if (bytes < 0) {
+            if (errno == EAGAIN || errno == EINTR) continue;
+            result.error = system_error("IR reading", errno);
+            break;
+        }
+        if (bytes == 0 || bytes % sizeof(values[0]) != 0) {
+            result.error = "Invalid IR receiver data";
+            break;
+        }
+        last_sample = std::chrono::steady_clock::now();
+        for (std::size_t i = 0; i < static_cast<std::size_t>(bytes) / sizeof(values[0]); ++i) {
+            const auto status = append_ir_sample(result, values[i]);
+            if (status == IrSampleStatus::Complete) return result;
+            if (status == IrSampleStatus::Overflow) {
+                result.error = "IR receiver overflow";
+                break;
+            }
+        }
+        if (!result.error.empty()) break;
+    }
+    if (cancelled) return {};
+    if (result.error.empty() && result.samples.empty()) result.error = "No IR signal received";
+    else if (result.error.empty()) result.truncated = true;
+    if (!result.error.empty()) result.samples.clear();
+    return result;
+}
+
 } // namespace
 
 IrReceiveResult receive_ir(const std::atomic_bool& cancelled) {
@@ -133,54 +187,17 @@ IrReceiveResult receive_ir(const std::atomic_bool& cancelled) {
         result.error = system_error("IR receive mode", errno);
         return result;
     }
-    const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(15);
-    auto last_sample = std::chrono::steady_clock::now();
-    while (!cancelled && std::chrono::steady_clock::now() < deadline) {
-        pollfd event{device.get(), POLLIN, 0};
-        const int ready = poll(&event, 1, 100);
-        if (ready < 0) {
-            if (errno == EINTR) continue;
-            result.error = system_error("IR polling", errno);
-            break;
-        }
-        if (ready == 0) {
-            if (!result.samples.empty() &&
-                std::chrono::steady_clock::now() - last_sample >= std::chrono::milliseconds(200)) {
-                return result;
-            }
-            continue;
-        }
-        if (event.revents & (POLLERR | POLLHUP | POLLNVAL)) {
-            result.error = "IR receiver disconnected";
-            break;
-        }
-        uint32_t values[64];
-        const auto bytes = read(device.get(), values, sizeof(values));
-        if (bytes < 0) {
-            if (errno == EAGAIN || errno == EINTR) continue;
-            result.error = system_error("IR reading", errno);
-            break;
-        }
-        if (bytes == 0 || bytes % sizeof(values[0]) != 0) {
-            result.error = "Invalid IR receiver data";
-            break;
-        }
-        last_sample = std::chrono::steady_clock::now();
-        for (std::size_t i = 0; i < static_cast<std::size_t>(bytes) / sizeof(values[0]); ++i) {
-            const auto status = append_ir_sample(result, values[i]);
-            if (status == IrSampleStatus::Complete) return result;
-            if (status == IrSampleStatus::Overflow) {
-                result.error = "IR receiver overflow";
-                break;
-            }
-        }
-        if (!result.error.empty()) break;
-    }
-    if (cancelled) return {};
-    if (result.error.empty() && result.samples.empty()) result.error = "No IR signal received";
-    if (!result.error.empty()) result.samples.clear();
-    return result;
+    return read_ir_data(device.get(), cancelled, std::chrono::seconds(15),
+                        std::chrono::milliseconds(200));
 }
+
+#if defined(POSEIDON_TEST_IR)
+IrReceiveResult receive_ir_test(int fd, const std::atomic_bool& cancelled,
+                                int timeout_ms, int idle_ms) {
+    return read_ir_data(fd, cancelled, std::chrono::milliseconds(timeout_ms),
+                        std::chrono::milliseconds(idle_ms));
+}
+#endif
 
 } // namespace platform
 

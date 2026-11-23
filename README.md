@@ -91,12 +91,18 @@ to read it are required; the desktop simulator reports reception as unsupported.
 `additional_hardware` permission mapping must be confirmed before publishing this feature.
 **Infrared → Remote learn** receives raw timings and lets you press `S` to save a complete capture
 in `~/poseidon-ir`. Files identify the carrier as unknown; they cannot be replayed by this app.
-Truncated captures are not saved.
+Truncated captures, including signals still arriving at the capture deadline, are not saved.
+**Expansion → Grove / I2C** lists I2C bus entries exposed by the device kernel. It does not
+probe addresses, open bus devices, identify Grove connectors, or control peripherals; the
+desktop simulator reports this view as unsupported.
 **Media → Camera** asks before capturing a single snapshot with the device's
-`/usr/bin/rpicam-still`. The image is held in memory only, and `ESC` cancels or closes it.
-This is not a live preview and does not save photos. A compatible, accessible camera and
+`/usr/bin/rpicam-still`. The image stays in memory unless you press `S` to save a new JPEG in
+`~/poseidon-photos`; `ESC` cancels capture or closes the image. Saving must finish before closing.
+The original camera JPEG may contain camera metadata. This is not a live preview. A compatible,
+accessible camera and
 the camera utility are required; the desktop simulator reports it as unsupported. Physical
-camera operation and any store permission requirements have not yet been verified.
+capture has been tested on the connected CardputerZero; the on-device viewer and photo-saving
+workflow still need verification. Publishing requires the store camera permission.
 **Media → Music** browses local files and plays a selected regular WAV, MP3, or FLAC file at 50% volume;
 press `ESC` to stop and return to the browser. Audio-device and decoding errors are shown.
 **Media → Piano** plays short generated tones with `A S D F G H J K` (C4 through C5);

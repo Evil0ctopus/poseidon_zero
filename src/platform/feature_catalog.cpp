@@ -91,9 +91,13 @@ FeatureList infrared_features() {
 FeatureList expansion_features() {
     return {{
         {"Grove / I2C",
-         "Unavailable; no supported Grove I2C device is configured",
+         "List kernel-exposed I2C buses without probing devices",
          FeatureRisk::Safe,
+#if USE_DESKTOP
          false},
+#else
+         true},
+#endif
         {"UART / TCP tools",
          "Disabled placeholder; no shell, tunnel, or remote-control workflow is available",
          FeatureRisk::Authorized,

@@ -685,6 +685,7 @@ if(NOT USE_DESKTOP AND BUILD_TESTING)
         tests/camera_capture_linux_test.cpp
         src/platform/camera_capture.cpp
         src/platform/gallery_jpeg.c
+        src/platform/unique_file.cpp
     )
     target_include_directories(poseidon_camera_capture_tests
         PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/src/platform"
@@ -692,6 +693,15 @@ if(NOT USE_DESKTOP AND BUILD_TESTING)
     target_compile_definitions(poseidon_camera_capture_tests PRIVATE USE_DESKTOP=0 POSEIDON_TEST_CAMERA=1)
     target_link_libraries(poseidon_camera_capture_tests PRIVATE CM0::JPEG Threads::Threads)
     add_test(NAME camera-capture COMMAND poseidon_camera_capture_tests)
+
+    add_executable(poseidon_ir_receive_tests
+        tests/ir_receive_linux_test.cpp
+        src/platform/ir_receive.cpp
+        src/platform/unique_file.cpp
+    )
+    target_include_directories(poseidon_ir_receive_tests PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/src/platform")
+    target_compile_definitions(poseidon_ir_receive_tests PRIVATE USE_DESKTOP=0 POSEIDON_TEST_IR=1)
+    add_test(NAME ir-receive COMMAND poseidon_ir_receive_tests)
 endif()
 if(USE_DESKTOP AND BUILD_TESTING)
     add_executable(poseidon_music_playback_tests
