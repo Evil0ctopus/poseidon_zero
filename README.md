@@ -595,8 +595,21 @@ USB keyboard and NFC workflows remain unavailable until their hardware interface
 **Network → Diagnostics** saves a sanitized support report in the home folder. **System** exposes
 memory, Wi-Fi, Bluetooth, Ethernet, storage, battery, clock, and
 brightness. **Network** shows local interface and gateway status, allows one manually entered ping
-or DNS lookup in the background, and can display the local ARP table. Port scanning and host
-discovery are not provided. **Wireless** exposes local Wi-Fi, signal, and Bluetooth status;
+or DNS lookup in the background, and can display the local ARP table. **Network → Port scan**
+accepts authorized hostnames, IPv4/IPv6 addresses, or CIDR ranges of at most 256 addresses.
+Choose TCP, UDP, or both, then common ports, all ports (1–65535), or custom comma-separated
+ports and ranges. Confirm before DNS and review resolved targets before confirming a scan.
+The common list is 21-23, 25, 53, 67-69, 80, 110, 123, 135, 137-139, 143, 161, 389,
+443, 445, 465, 500, 587, 631, 636, 993, 995, 1433, 1521, 1883, 1900, 2049, 3000,
+3306, 3389, 5000, 5353, 5432, 5900, 6379, 8000, 8080, 8443, and 8883.
+Use LEFT/RIGHT to browse targets or results, P to review the selected ports, ESC to cancel,
+and S to save a private report in
+`~/poseidon-reports`. Scans use at most 16 sockets, 50 launches per second, one-second
+timeouts, and retain at most 2,048 results; counts include omitted results. A silent UDP probe
+is **open or filtered**, not proof of an open port; services may ignore empty probes and
+firewalls or ICMP rate limiting can make results inconclusive. The desktop simulator does not
+perform real scans. Host discovery, spoofing and hijacking are not provided.
+**Wireless** exposes local Wi-Fi, signal, and Bluetooth status;
 additional ADV parity
 slots are shown as `[OFF]` placeholders. Selecting one only reports that it is unavailable; no
 scan, transmission, credential capture, input injection, or device-control action is performed.

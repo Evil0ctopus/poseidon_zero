@@ -8,10 +8,12 @@ FeatureList network_features() {
         {"Gateway", "View the configured default gateway", FeatureRisk::Safe, true},
         {"Ping", "Check one manually entered host", FeatureRisk::Safe, true},
         {"DNS", "Resolve one manually entered hostname", FeatureRisk::Safe, true},
-        {"Port scan / LAN recon",
-         "Disabled placeholder for scans, responder/DHCP spoofing, and network hijack; no network action is run",
-         FeatureRisk::Authorized,
+        {"Port scan", "Scan authorized targets using TCP and UDP", FeatureRisk::Authorized,
+#if USE_DESKTOP
          false},
+#else
+         true},
+#endif
         {"Ethernet", "View and troubleshoot wired network state", FeatureRisk::Safe, true},
         {"ARP table", "Read the local address table", FeatureRisk::Safe, true},
         {"Diagnostics", "Save a sanitized local support report", FeatureRisk::Safe, true},

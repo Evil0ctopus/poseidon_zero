@@ -2,6 +2,7 @@
 #include "camera_capture.h"
 #include "ir_receive.h"
 #include "linux_network.h"
+#include "port_scan.h"
 #include "safe_tools.h"
 #include "tool_status.h"
 #include "wifi_scan.h"
@@ -91,6 +92,32 @@ bool write_jpeg(const std::filesystem::path& path, unsigned int width) {
 
 int main() {
     bool passed = true;
+    const auto parsed_ports = platform::parse_port_list("443,80-82,80");
+    const auto all_ports = platform::parse_port_list("1-65535");
+    if (!parsed_ports.error.empty() || parsed_ports.ports != std::vector<uint16_t>{80, 81, 82, 443} ||
+        platform::format_port_list(parsed_ports.ports) != "80-82,443" ||
+        !all_ports.error.empty() || all_ports.ports.size() != 65535 ||
+        platform::format_port_list(all_ports.ports) != "1-65535" ||
+        platform::parse_port_list("0").error.empty() ||
+        platform::parse_port_list("5-2").error.empty() ||
+        platform::parse_port_list("1,").error.empty() ||
+        platform::parse_port_list("65536").error.empty()) {
+        std::cerr << "Port ranges must validate and deduplicate\n";
+        passed = false;
+    }
+    const std::atomic_bool scan_running{false};
+    const auto subnet = platform::resolve_port_targets("192.0.2.0/30", scan_running);
+    if (!subnet.error.empty() ||
+        subnet.addresses != std::vector<std::string>{"192.0.2.1", "192.0.2.2"} ||
+        platform::resolve_port_targets("192.0.2.0/23", scan_running).error.empty() ||
+        platform::resolve_port_targets("224.0.0.1", scan_running).error.empty() ||
+        platform::resolve_port_targets("::ffff:192.0.2.1", scan_running).error.empty() ||
+        platform::resolve_port_targets("ff02::1", scan_running).error.empty() ||
+        platform::resolve_port_targets("2001:db8::/119", scan_running).error.empty() ||
+        platform::resolve_port_targets("192.0.2.999", scan_running).error.empty()) {
+        std::cerr << "Targets must be unicast and subnet size bounded\n";
+        passed = false;
+    }
     const std::atomic_bool camera_running{false};
     if (platform::capture_camera(camera_running).error.empty()) {
         std::cerr << "Desktop camera must report unsupported\n";

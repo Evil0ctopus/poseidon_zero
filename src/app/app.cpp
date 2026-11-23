@@ -30,6 +30,7 @@
 #include "wifi_scan.h"
 #include "ir_receive.h"
 #include "linux_network.h"
+#include "port_scan.h"
 #include "feature_catalog.h"
 #include "gallery_image.h"
 #include "theme.h"
@@ -327,6 +328,8 @@ public:
         if (wifi_thread_.joinable()) {
             wifi_thread_.join();
         }
+        if (port_task_) port_task_->progress.cancelled = true;
+        if (port_thread_.joinable()) port_thread_.join();
         if (gatt_task_) {
             gatt_task_->cancelled = true;
         }
@@ -358,6 +361,7 @@ public:
         update_network_query();
         update_gatt();
         update_wifi();
+        update_port_scan();
         update_ir();
         update_file_browser();
         update_gallery_image();
@@ -394,6 +398,7 @@ public:
                  !chance_tool_active_ && !brightness_adjustment_ &&
                  text_tool_mode_ == TextToolMode::None &&
                  gatt_stage_ == GattStage::None && !wifi_active_ && !wifi_task_ &&
+                 port_stage_ == PortStage::None && !port_task_ &&
                  !ir_active_ && !ir_task_ && !network_query_ &&
                  !help_popup_->visible() && !toast_->visible() &&
                  view_model_.screensaver_due(lv_display_get_inactive_time(nullptr))) {
@@ -487,6 +492,16 @@ private:
     };
 
     enum class WifiStage { Results, ChooseConnection, Password, Confirm, Connecting, Notice };
+
+    enum class PortStage { None, Target, Protocol, Ports, Custom, DnsConsent, Resolving,
+                           Review, ReviewPorts, Scanning, Results, Saving, Notice };
+    struct PortTask {
+        platform::PortScanProgress progress;
+        std::atomic_bool complete{false};
+        platform::PortTargets targets;
+        platform::PortScanResult result;
+        platform::PortReportResult report;
+    };
 
     struct IrTask {
         std::atomic_bool cancelled{false};
@@ -823,6 +838,321 @@ private:
                 start_ir_receive();
             } else if (ir_learning_ && (key == 's' || key == 'S')) {
                 start_ir_save();
+            }
+        }
+        return true;
+    }
+
+    void show_port_prompt(const std::string& notice = {}) {
+        if (!notice.empty()) {
+            port_return_stage_ = port_stage_;
+            port_stage_ = PortStage::Notice;
+            port_notice_ = notice;
+            port_notice_page_ = 0;
+        }
+        std::string text;
+        switch (port_stage_) {
+            case PortStage::Target: {
+                const auto shown = port_target_.size() > 35
+                    ? "..." + port_target_.substr(port_target_.size() - 35) : port_target_;
+                text += "Target IP, CIDR or hostname\n" + shown + "\nENTER next  ESC close";
+                break;
+            }
+            case PortStage::Protocol:
+                text += "Protocol: 1 TCP  2 UDP\n3 both  ESC close";
+                break;
+            case PortStage::Ports:
+                text += "Ports: ENTER/1 common\n2 all  3 custom  ESC close";
+                break;
+            case PortStage::Custom: {
+                const auto shown = port_spec_.size() > 35
+                    ? "..." + port_spec_.substr(port_spec_.size() - 35) : port_spec_;
+                text += "Ports: 80,443,1000-1010\n" + shown + "\nENTER next  ESC close";
+                break;
+            }
+            case PortStage::DnsConsent:
+                text += "DNS may contact a server.\nResolve only authorized targets?\nENTER yes  ESC cancel";
+                break;
+            case PortStage::Resolving:
+                text += "Resolving target...\nESC cancels";
+                break;
+            case PortStage::Review:
+                text += "Target " + std::to_string(port_selection_ + 1) + "/" +
+                    std::to_string(port_targets_.addresses.size()) + "\n" +
+                    port_targets_.addresses[port_selection_] + "\n" +
+                    (port_tcp_ ? (port_udp_ ? "TCP+UDP" : "TCP") : "UDP") +
+                    "  " + std::to_string(port_ports_.size()) + " ports  " +
+                    std::to_string(static_cast<uint64_t>(port_targets_.addresses.size()) *
+                                   port_ports_.size() * (port_tcp_ && port_udp_ ? 2 : 1)) +
+                    " probes\nLEFT/RIGHT targets  P ports\nENTER: authorized scan";
+                break;
+            case PortStage::ReviewPorts: {
+                constexpr std::size_t width = 32;
+                const auto pages = (port_spec_.size() + width - 1) / width;
+                text += "Ports " + std::to_string(port_selection_ + 1) + "/" +
+                    std::to_string(pages) + "\n" +
+                    port_spec_.substr(port_selection_ * width, width) +
+                    "\nLEFT/RIGHT  ESC returns";
+                break;
+            }
+            case PortStage::Scanning:
+                text += "Scanning " + std::to_string(port_task_->progress.completed.load()) + "/" +
+                    std::to_string(port_task_->progress.total.load()) + "\nESC cancels";
+                break;
+            case PortStage::Saving:
+                text += "Saving report...";
+                break;
+            case PortStage::Results:
+                if (port_selection_ == 0) {
+                    text += !port_result_.error.empty() ? "Scan failed (E details)" :
+                            port_result_.cancelled ? "Cancelled (partial)" : "Scan complete";
+                    text += "\nOpen " + std::to_string(port_result_.open) +
+                            "  closed " + std::to_string(port_result_.closed) +
+                            "\nFiltered " + std::to_string(port_result_.filtered) +
+                            "  open/filter " + std::to_string(port_result_.open_or_filtered) +
+                            "\nUnreachable " + std::to_string(port_result_.unreachable) +
+                            "  errors " + std::to_string(port_result_.errors);
+                    if (port_result_.truncated) text += "\nResults truncated";
+                } else {
+                    const auto& entry = port_result_.entries[port_selection_ - 1];
+                    text += "Result " + std::to_string(port_selection_) + "/" +
+                        std::to_string(port_result_.entries.size()) + "\n" + entry.address + "\n" +
+                        (entry.protocol == platform::PortProtocol::Tcp ? "TCP " : "UDP ") +
+                        std::to_string(entry.port) + "  " + platform::port_state_name(entry.state);
+                }
+                text += "\nLEFT/RIGHT browse  S save  ESC";
+                break;
+            case PortStage::Notice: {
+                constexpr std::size_t width = 90;
+                const auto pages = (port_notice_.size() + width - 1) / width;
+                text += "Notice " + std::to_string(port_notice_page_ + 1) + "/" +
+                    std::to_string(pages) + "\n" +
+                    port_notice_.substr(port_notice_page_ * width, width) +
+                    "\nLEFT/RIGHT  ENTER close";
+                break;
+            }
+            case PortStage::None: return;
+        }
+        toast_->show_persistent(text);
+    }
+
+    void start_port_scan() {
+        if (port_task_) return;
+        port_stage_ = PortStage::Target;
+        port_target_.clear();
+        port_spec_.clear();
+        port_result_ = {};
+        show_port_prompt();
+    }
+
+    void start_port_resolution() {
+        auto task = std::make_shared<PortTask>();
+        port_task_ = task;
+        port_stage_ = PortStage::Resolving;
+        show_port_prompt();
+        try {
+            port_thread_ = std::thread([task, target = port_target_] {
+                try {
+                    task->targets = platform::resolve_port_targets(target, task->progress.cancelled);
+                } catch (const std::exception& error) {
+                    task->targets.error = std::string("Resolution failed: ") + error.what();
+                }
+                task->complete = true;
+            });
+        } catch (const std::system_error& error) {
+            port_task_.reset();
+            port_stage_ = PortStage::Target;
+            show_port_prompt("Cannot start resolver: " + error.code().message());
+        }
+    }
+
+    void run_port_scan() {
+        auto task = std::make_shared<PortTask>();
+        port_task_ = task;
+        port_stage_ = PortStage::Scanning;
+        show_port_prompt();
+        try {
+            port_thread_ = std::thread([task, targets = port_targets_, ports = port_ports_,
+                                        tcp = port_tcp_, udp = port_udp_] {
+                try {
+                    task->result = platform::scan_ports(targets, ports, tcp, udp, task->progress);
+                } catch (const std::exception& error) {
+                    task->result.error = std::string("Scan failed: ") + error.what();
+                }
+                task->complete = true;
+            });
+        } catch (const std::system_error& error) {
+            port_task_.reset();
+            port_stage_ = PortStage::Review;
+            show_port_prompt("Cannot start scan: " + error.code().message());
+        }
+    }
+
+    void save_port_scan() {
+        const char* home = std::getenv("HOME");
+#if defined(_WIN32)
+        if (!home || !*home) home = std::getenv("USERPROFILE");
+#endif
+        if (!home || !*home) {
+            show_port_prompt("Home folder unavailable");
+            return;
+        }
+        auto task = std::make_shared<PortTask>();
+        port_task_ = task;
+        port_stage_ = PortStage::Saving;
+        show_port_prompt();
+        try {
+            port_thread_ = std::thread([task, result = port_result_,
+                                        directory = std::filesystem::u8path(home) / "poseidon-reports"] {
+                try {
+                    task->report = platform::save_port_report(directory, result);
+                } catch (const std::exception& error) {
+                    task->report.error = std::string("Save failed: ") + error.what();
+                }
+                task->complete = true;
+            });
+        } catch (const std::system_error& error) {
+            port_task_.reset();
+            port_stage_ = PortStage::Results;
+            show_port_prompt("Cannot start save: " + error.code().message());
+        }
+    }
+
+    void update_port_scan() {
+        const auto task = port_task_;
+        if (!task) return;
+        if (!task->complete) {
+            const auto now = std::chrono::steady_clock::now();
+            if (port_stage_ == PortStage::Scanning && now >= port_next_update_) {
+                port_next_update_ = now + std::chrono::milliseconds(250);
+                show_port_prompt();
+            }
+            return;
+        }
+        if (port_thread_.joinable()) port_thread_.join();
+        port_task_.reset();
+        if (port_stage_ == PortStage::Resolving) {
+            if (task->progress.cancelled) {
+                port_stage_ = PortStage::Target;
+                show_port_prompt("Resolution cancelled");
+            } else if (!task->targets.error.empty() || task->targets.addresses.empty()) {
+                port_stage_ = PortStage::Target;
+                show_port_prompt(task->targets.error.empty() ? "No target addresses" : task->targets.error);
+            } else {
+                port_targets_ = std::move(task->targets);
+                port_selection_ = 0;
+                port_stage_ = PortStage::Review;
+                show_port_prompt();
+            }
+        } else if (port_stage_ == PortStage::Scanning) {
+            port_result_ = std::move(task->result);
+            port_selection_ = 0;
+            port_stage_ = PortStage::Results;
+            show_port_prompt();
+        } else if (port_stage_ == PortStage::Saving) {
+            port_stage_ = PortStage::Results;
+            show_port_prompt(task->report.error.empty()
+                ? "Saved: " + task->report.path.filename().u8string() : task->report.error);
+        }
+    }
+
+    bool handle_port_key(uint32_t key, bool long_pressed) {
+        if (long_pressed) return true;
+        if (port_stage_ == PortStage::Notice) {
+            const auto pages = (port_notice_.size() + 89) / 90;
+            if (key == LV_KEY_ESC || key == LV_KEY_ENTER) {
+                port_stage_ = port_return_stage_;
+                show_port_prompt();
+            } else if ((key == LV_KEY_LEFT || key == 'z') && port_notice_page_ > 0) {
+                --port_notice_page_;
+                show_port_prompt();
+            } else if ((key == LV_KEY_RIGHT || key == 'c') && port_notice_page_ + 1 < pages) {
+                ++port_notice_page_;
+                show_port_prompt();
+            }
+            return true;
+        }
+        if (port_stage_ == PortStage::Resolving || port_stage_ == PortStage::Scanning) {
+            if (key == LV_KEY_ESC) port_task_->progress.cancelled = true;
+            return true;
+        }
+        if (port_stage_ == PortStage::Saving) return true;
+        if (port_stage_ == PortStage::ReviewPorts && key == LV_KEY_ESC) {
+            port_stage_ = PortStage::Review;
+            port_selection_ = 0;
+            show_port_prompt();
+            return true;
+        }
+        if (key == LV_KEY_ESC) {
+            port_stage_ = PortStage::None;
+            toast_->hide();
+            return true;
+        }
+        if (port_stage_ == PortStage::Target || port_stage_ == PortStage::Custom) {
+            auto& input = port_stage_ == PortStage::Target ? port_target_ : port_spec_;
+            const auto limit = port_stage_ == PortStage::Target ? 253U : 4096U;
+            if (key == LV_KEY_BACKSPACE || key == LV_KEY_DEL) {
+                if (!input.empty()) input.pop_back();
+                show_port_prompt();
+            } else if (key == LV_KEY_ENTER) {
+                if (port_stage_ == PortStage::Target) {
+                    if (input.empty()) show_port_prompt("Enter a target");
+                    else { port_stage_ = PortStage::Protocol; show_port_prompt(); }
+                } else {
+                    auto parsed = platform::parse_port_list(input);
+                    if (!parsed.error.empty()) show_port_prompt(parsed.error);
+                    else {
+                        port_ports_ = std::move(parsed.ports);
+                        port_spec_ = platform::format_port_list(port_ports_);
+                        port_stage_ = PortStage::DnsConsent;
+                        show_port_prompt();
+                    }
+                }
+            } else if (key >= 32 && key <= 126 && input.size() < limit) {
+                input.push_back(static_cast<char>(key));
+                show_port_prompt();
+            }
+        } else if (port_stage_ == PortStage::Protocol && key >= '1' && key <= '3') {
+            port_tcp_ = key != '2';
+            port_udp_ = key != '1';
+            port_stage_ = PortStage::Ports;
+            show_port_prompt();
+        } else if (port_stage_ == PortStage::Ports &&
+                   (key == LV_KEY_ENTER || (key >= '1' && key <= '3'))) {
+            if (key == '3') {
+                port_spec_.clear();
+                port_stage_ = PortStage::Custom;
+            } else {
+                port_ports_ = key == '2' ? platform::parse_port_list("1-65535").ports
+                                         : platform::common_ports().ports;
+                port_spec_ = platform::format_port_list(port_ports_);
+                port_stage_ = PortStage::DnsConsent;
+            }
+            show_port_prompt();
+        } else if (port_stage_ == PortStage::DnsConsent && key == LV_KEY_ENTER) {
+            start_port_resolution();
+        } else if (port_stage_ == PortStage::Review || port_stage_ == PortStage::ReviewPorts ||
+                   port_stage_ == PortStage::Results) {
+            const std::size_t count = port_stage_ == PortStage::Review
+                ? port_targets_.addresses.size() : port_stage_ == PortStage::ReviewPorts
+                ? (port_spec_.size() + 31) / 32 : port_result_.entries.size() + 1;
+            if ((key == LV_KEY_LEFT || key == 'z') && port_selection_ > 0) {
+                --port_selection_;
+                show_port_prompt();
+            } else if ((key == LV_KEY_RIGHT || key == 'c') && port_selection_ + 1 < count) {
+                ++port_selection_;
+                show_port_prompt();
+            } else if (port_stage_ == PortStage::Review && key == LV_KEY_ENTER) {
+                run_port_scan();
+            } else if (port_stage_ == PortStage::Review && (key == 'p' || key == 'P')) {
+                port_stage_ = PortStage::ReviewPorts;
+                port_selection_ = 0;
+                show_port_prompt();
+            } else if (port_stage_ == PortStage::Results && (key == 's' || key == 'S')) {
+                save_port_scan();
+            } else if (port_stage_ == PortStage::Results && (key == 'e' || key == 'E') &&
+                       !port_result_.error.empty()) {
+                show_port_prompt(port_result_.error);
             }
         }
         return true;
@@ -3205,6 +3535,9 @@ private:
         if (arp_active_) {
             return handle_arp_key(key, long_pressed);
         }
+        if (port_stage_ != PortStage::None && key != platform::kKeyPrintScreen) {
+            return handle_port_key(key, long_pressed);
+        }
         if (wifi_active_) {
             return handle_wifi_key(key, long_pressed);
         }
@@ -3445,8 +3778,7 @@ private:
                                 start_text_tool(TextToolMode::Dns);
                                 break;
                             case 4:
-                                show_feature_status(platform::network_features(),
-                                                    view_model_.tool_selection());
+                                start_port_scan();
                                 break;
                             case 5:
                                 if (USE_DESKTOP) {
@@ -3748,6 +4080,21 @@ private:
     bool arp_truncated_{false};
     std::vector<platform::ArpEntry> arp_entries_;
     std::size_t arp_selection_{0};
+    PortStage port_stage_{PortStage::None};
+    PortStage port_return_stage_{PortStage::None};
+    std::string port_notice_;
+    std::size_t port_notice_page_{0};
+    std::shared_ptr<PortTask> port_task_;
+    std::thread port_thread_;
+    std::string port_target_;
+    std::string port_spec_;
+    platform::PortTargets port_targets_;
+    std::vector<uint16_t> port_ports_;
+    platform::PortScanResult port_result_;
+    std::size_t port_selection_{0};
+    bool port_tcp_{true};
+    bool port_udp_{false};
+    std::chrono::steady_clock::time_point port_next_update_{};
     std::shared_ptr<WifiTask> wifi_task_;
     std::thread wifi_thread_;
     platform::WifiScanResult wifi_result_;

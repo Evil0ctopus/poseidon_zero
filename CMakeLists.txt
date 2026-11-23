@@ -670,6 +670,16 @@ include(cmake/cm0-package.cmake)
 
 include(CTest)
 if(NOT USE_DESKTOP AND BUILD_TESTING)
+    add_executable(poseidon_port_scan_tests
+        tests/port_scan_linux_test.cpp
+        src/platform/port_scan.cpp
+        src/platform/unique_file.cpp
+    )
+    target_include_directories(poseidon_port_scan_tests PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/src/platform")
+    target_compile_definitions(poseidon_port_scan_tests PRIVATE USE_DESKTOP=0)
+    target_link_libraries(poseidon_port_scan_tests PRIVATE PkgConfig::CM0_GIO Threads::Threads)
+    add_test(NAME port-scan COMMAND poseidon_port_scan_tests)
+
     add_executable(poseidon_wifi_connect_tests
         tests/wifi_connect_linux_test.cpp
         src/platform/wifi_scan.cpp
@@ -779,6 +789,7 @@ if(USE_DESKTOP AND BUILD_TESTING)
         src/platform/ir_receive.cpp
         src/platform/unique_file.cpp
         src/platform/linux_network.cpp
+        src/platform/port_scan.cpp
         src/platform/safe_tools.cpp
         src/platform/tool_status.cpp
         src/platform/wifi_scan.cpp

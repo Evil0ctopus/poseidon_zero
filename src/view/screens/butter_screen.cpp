@@ -410,7 +410,7 @@ void ButterScreen::build_content(lv_obj_t* content) {
         tools[1] = gateway_summary;
         tools[2] = "Ping  enter host";
         tools[3] = "DNS  enter name";
-        tools[4] = "Port scan  disabled";
+        tools[4] = USE_DESKTOP ? "Port scan  device only" : "Port scan  authorized";
         tools[5] = "Ethernet status";
         tools[6] = "ARP table";
         tools[7] = "Support report";
