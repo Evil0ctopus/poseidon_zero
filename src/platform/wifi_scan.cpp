@@ -1,5 +1,7 @@
 #include "wifi_scan.h"
 
+#include <algorithm>
+
 namespace platform {
 
 int wifi_channel(uint32_t frequency_mhz) {
@@ -18,6 +20,29 @@ int wifi_channel(uint32_t frequency_mhz) {
     return -1;
 }
 
+WifiSecurity wifi_security(const WifiScanNetwork& network) {
+    const uint32_t flags = network.wpa_flags | network.rsn_flags;
+    if (!network.secured && flags == 0) return WifiSecurity::Open;
+    if (flags & 0x400U) return WifiSecurity::Sae;
+    if (flags & 0x100U) return WifiSecurity::WpaPsk;
+    return WifiSecurity::Unsupported;
+}
+
+bool valid_wifi_password(WifiSecurity security, const std::string& password) {
+    if (security == WifiSecurity::Open) return password.empty();
+    if (security != WifiSecurity::WpaPsk && security != WifiSecurity::Sae) return false;
+    if (password.size() >= (security == WifiSecurity::Sae ? 1U : 8U) &&
+        password.size() <= 63)
+        return std::all_of(password.begin(), password.end(), [](unsigned char ch) {
+            return ch >= 32 && ch <= 126;
+        });
+    return security == WifiSecurity::WpaPsk && password.size() == 64 &&
+           std::all_of(password.begin(), password.end(), [](unsigned char ch) {
+               return (ch >= '0' && ch <= '9') || (ch >= 'a' && ch <= 'f') ||
+                      (ch >= 'A' && ch <= 'F');
+           });
+}
+
 } // namespace platform
 
 #if USE_DESKTOP
@@ -29,6 +54,11 @@ WifiScanResult scan_wifi(const std::atomic_bool& cancelled) {
         return {};
     }
     return {{}, "Wi-Fi scanning requires a supported device"};
+}
+
+std::string request_wifi_connection(const WifiScanNetwork&, WifiConnectMode,
+                                    const std::string&) {
+    return "Wi-Fi connection requires a supported device";
 }
 
 } // namespace platform
@@ -243,7 +273,8 @@ WifiScanResult scan_wifi(const std::atomic_bool& cancelled) {
             break;
         }
         result.networks.push_back({safe_name(ssid.get()), address, strength,
-                                   (flags & 1U) != 0 || wpa != 0 || rsn != 0, frequency});
+                                   (flags & 1U) != 0 || wpa != 0 || rsn != 0, frequency,
+                                   adapter, path, wpa, rsn});
     }
     g_variant_iter_free(iterator);
     if (cancelled) return {};
@@ -252,6 +283,70 @@ WifiScanResult scan_wifi(const std::atomic_bool& cancelled) {
         result.error = "Wi-Fi access point: " + result.error;
     }
     return result;
+}
+
+std::string request_wifi_connection(const WifiScanNetwork& network, WifiConnectMode mode,
+                                    const std::string& password) {
+    if (network.device_path.empty() || network.access_point_path.empty() ||
+        !g_variant_is_object_path(network.device_path.c_str()) ||
+        !g_variant_is_object_path(network.access_point_path.c_str()))
+        return "Invalid access point; scan again";
+    const auto security = wifi_security(network);
+    if (mode == WifiConnectMode::New &&
+        (security == WifiSecurity::Unsupported || !valid_wifi_password(security, password)))
+        return "Unsupported security or invalid password";
+
+    const std::atomic_bool cancelled{false};
+    std::string error;
+    auto bus = system_bus(cancelled, error);
+    if (!bus) return error;
+    Variant result(nullptr, g_variant_unref);
+    if (mode == WifiConnectMode::Saved) {
+        result = call(bus.get(), kRoot, kService, "ActivateConnection",
+                      g_variant_new("(ooo)", "/", network.device_path.c_str(),
+                                    network.access_point_path.c_str()),
+                      G_VARIANT_TYPE("(o)"), error);
+    } else {
+        GVariantBuilder settings;
+        g_variant_builder_init(&settings, G_VARIANT_TYPE("a{sa{sv}}"));
+        GVariantBuilder connection;
+        g_variant_builder_init(&connection, G_VARIANT_TYPE("a{sv}"));
+        g_variant_builder_add(&connection, "{sv}", "autoconnect", g_variant_new_boolean(FALSE));
+        g_variant_builder_add(&settings, "{s@a{sv}}", "connection",
+                              g_variant_builder_end(&connection));
+        if (security != WifiSecurity::Open) {
+            GVariantBuilder wireless_security;
+            g_variant_builder_init(&wireless_security, G_VARIANT_TYPE("a{sv}"));
+            g_variant_builder_add(&wireless_security, "{sv}", "key-mgmt",
+                                  g_variant_new_string(security == WifiSecurity::Sae ? "sae" : "wpa-psk"));
+            g_variant_builder_add(&wireless_security, "{sv}", "psk",
+                                  g_variant_new_string(password.c_str()));
+            g_variant_builder_add(&settings, "{s@a{sv}}", "802-11-wireless-security",
+                                  g_variant_builder_end(&wireless_security));
+        }
+        GVariantBuilder options;
+        g_variant_builder_init(&options, G_VARIANT_TYPE("a{sv}"));
+        result = call(bus.get(), kRoot, kService, "AddAndActivateConnection2",
+                      g_variant_new("(a{sa{sv}}ooa{sv})", &settings,
+                                    network.device_path.c_str(), network.access_point_path.c_str(),
+                                    &options), G_VARIANT_TYPE("(ooa{sv})"), error);
+    }
+    if (!result) {
+        if (!password.empty()) {
+            std::size_t offset = 0;
+            while ((offset = error.find(password, offset)) != std::string::npos) {
+                error.replace(offset, password.size(), "[redacted]");
+                offset += 10;
+            }
+        }
+        if (error.rfind("GDBus.Error:", 0) == 0) {
+            const auto separator = error.find(": ", 12);
+            if (separator != std::string::npos) error.erase(0, separator + 2);
+        }
+        if (error.size() > 120) error.resize(120);
+        return "Request error; check Wi-Fi status: " + error;
+    }
+    return {};
 }
 
 } // namespace platform

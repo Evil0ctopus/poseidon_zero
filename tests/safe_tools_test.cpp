@@ -133,6 +133,34 @@ int main() {
         std::cerr << "Wi-Fi frequencies must map to the correct channel or report unknown\n";
         passed = false;
     }
+    platform::WifiScanNetwork security_fixture;
+    if (platform::wifi_security(security_fixture) != platform::WifiSecurity::Open ||
+        !platform::valid_wifi_password(platform::WifiSecurity::Open, "")) {
+        std::cerr << "Open Wi-Fi must not require a password\n";
+        passed = false;
+    }
+    security_fixture.secured = true;
+    security_fixture.rsn_flags = 0x100;
+    if (platform::wifi_security(security_fixture) != platform::WifiSecurity::WpaPsk ||
+        !platform::valid_wifi_password(platform::WifiSecurity::WpaPsk, "password") ||
+        platform::valid_wifi_password(platform::WifiSecurity::WpaPsk, "short") ||
+        !platform::valid_wifi_password(platform::WifiSecurity::WpaPsk, std::string(64, 'a')) ||
+        platform::valid_wifi_password(platform::WifiSecurity::WpaPsk, std::string(64, 'z'))) {
+        std::cerr << "WPA password validation failed\n";
+        passed = false;
+    }
+    security_fixture.rsn_flags = 0x500;
+    if (platform::wifi_security(security_fixture) != platform::WifiSecurity::Sae ||
+        !platform::valid_wifi_password(platform::WifiSecurity::Sae, "x") ||
+        platform::valid_wifi_password(platform::WifiSecurity::Sae, std::string(64, 'a'))) {
+        std::cerr << "WPA3 must be preferred when advertised\n";
+        passed = false;
+    }
+    security_fixture.rsn_flags = 0x200;
+    if (platform::wifi_security(security_fixture) != platform::WifiSecurity::Unsupported) {
+        std::cerr << "Enterprise authentication must not be treated as a personal password\n";
+        passed = false;
+    }
     std::atomic_bool scan_cancelled{false};
     const auto desktop_scan = platform::scan_wifi(scan_cancelled);
     if (desktop_scan.error.empty() || !desktop_scan.networks.empty()) {

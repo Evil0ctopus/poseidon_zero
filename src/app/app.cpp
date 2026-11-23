@@ -481,8 +481,12 @@ private:
         std::atomic_bool cancelled{false};
         std::mutex mutex;
         bool complete{false};
+        bool connecting{false};
+        std::string connection_error;
         platform::WifiScanResult result;
     };
+
+    enum class WifiStage { Results, ChooseConnection, Password, Confirm, Connecting, Notice };
 
     struct IrTask {
         std::atomic_bool cancelled{false};
@@ -834,6 +838,7 @@ private:
         wifi_task_ = task;
         wifi_active_ = true;
         wifi_scanning_ = true;
+        wifi_stage_ = WifiStage::Results;
         toast_->show_persistent("Scanning nearby Wi-Fi networks...\nESC cancels");
         try {
             wifi_thread_ = std::thread([task] {
@@ -859,20 +864,22 @@ private:
     void show_wifi() {
         std::string message;
         if (!wifi_result_.error.empty()) {
-            message = "Wi-Fi error\n" + wifi_result_.error;
+            message += "Wi-Fi error\n" + wifi_result_.error;
         } else if (wifi_result_.networks.empty()) {
-            message = "No Wi-Fi networks found";
+            message += "No Wi-Fi networks found";
         } else {
             const auto& network = wifi_result_.networks[wifi_selection_];
             const int channel = platform::wifi_channel(network.frequency_mhz);
-            message = "Wi-Fi " + std::to_string(wifi_selection_ + 1) + "/" +
+            message += "Wi-Fi " + std::to_string(wifi_selection_ + 1) + "/" +
                       std::to_string(wifi_result_.networks.size()) + "\n" +
                       network.name + "\n" + network.address + "\n" +
                       std::to_string(network.strength) + "%  " +
                       (network.secured ? "Secured" : "Open") +
                       (channel >= 0 ? "  Ch " + std::to_string(channel) : "");
         }
-        message += "\nUP/DOWN select  ENTER rescan\nESC back";
+        message += wifi_result_.networks.empty()
+            ? "\nENTER rescan  ESC back"
+            : "\nUP/DOWN select  ENTER connect\nR rescan  ESC back";
         toast_->show_persistent(message, wifi_result_.error.empty()
                                              ? view::widgets::ToastTone::Default
                                              : view::widgets::ToastTone::Warning);
@@ -888,6 +895,17 @@ private:
         if (wifi_thread_.joinable()) wifi_thread_.join();
         wifi_task_.reset();
         wifi_scanning_ = false;
+        if (task->connecting) {
+            if (!wifi_active_) return;
+            wifi_stage_ = WifiStage::Notice;
+            if (task->connection_error.empty()) {
+                toast_->show_persistent("Connection requested\nCheck Wi-Fi status for result\nENTER/ESC back");
+            } else {
+                toast_->show_persistent(task->connection_error + "\nENTER/ESC back",
+                                        view::widgets::ToastTone::Warning);
+            }
+            return;
+        }
         if (task->cancelled) return;
         wifi_result_ = std::move(task->result);
         wifi_selection_ = 0;
@@ -896,6 +914,72 @@ private:
 
     bool handle_wifi_key(uint32_t key, bool long_pressed) {
         if (long_pressed) return true;
+        if (wifi_stage_ == WifiStage::Connecting) return true;
+        if (wifi_stage_ == WifiStage::Notice) {
+            if (key == LV_KEY_ENTER || key == LV_KEY_ESC) {
+                wifi_stage_ = WifiStage::Results;
+                show_wifi();
+            }
+            return true;
+        }
+        if (wifi_stage_ == WifiStage::Password) {
+            if (key == LV_KEY_ESC) {
+                std::fill(wifi_password_.begin(), wifi_password_.end(), '\0');
+                wifi_password_.clear();
+                wifi_stage_ = WifiStage::Results;
+                show_wifi();
+            } else if (key == LV_KEY_BACKSPACE || key == LV_KEY_DEL) {
+                if (!wifi_password_.empty()) {
+                    wifi_password_.back() = '\0';
+                    wifi_password_.pop_back();
+                }
+                show_wifi_password();
+            } else if (key == LV_KEY_ENTER) {
+                const auto security = platform::wifi_security(wifi_result_.networks[wifi_selection_]);
+                if (!platform::valid_wifi_password(security, wifi_password_)) {
+                    show_wifi_password("Invalid password");
+                } else {
+                    show_wifi_confirm();
+                }
+            } else if (key >= 32 && key <= 126 && wifi_password_.size() < 64) {
+                wifi_password_.push_back(static_cast<char>(key));
+                show_wifi_password();
+            }
+            return true;
+        }
+        if (wifi_stage_ == WifiStage::ChooseConnection) {
+            if (key == LV_KEY_ESC) {
+                wifi_stage_ = WifiStage::Results;
+                show_wifi();
+            } else if (key == 's' || key == 'S') {
+                wifi_connect_mode_ = platform::WifiConnectMode::Saved;
+                show_wifi_confirm();
+            } else if (key == 'n' || key == 'N') {
+                wifi_connect_mode_ = platform::WifiConnectMode::New;
+                const auto security = platform::wifi_security(wifi_result_.networks[wifi_selection_]);
+                if (security == platform::WifiSecurity::Unsupported) {
+                    toast_->show_persistent("Security not supported for new profiles\nS saved  ESC back",
+                                            view::widgets::ToastTone::Warning);
+                } else if (security == platform::WifiSecurity::Open) {
+                    show_wifi_confirm();
+                } else {
+                    wifi_stage_ = WifiStage::Password;
+                    show_wifi_password();
+                }
+            }
+            return true;
+        }
+        if (wifi_stage_ == WifiStage::Confirm) {
+            if (key == LV_KEY_ESC) {
+                std::fill(wifi_password_.begin(), wifi_password_.end(), '\0');
+                wifi_password_.clear();
+                wifi_stage_ = WifiStage::Results;
+                show_wifi();
+            } else if (key == LV_KEY_ENTER) {
+                request_wifi_connection();
+            }
+            return true;
+        }
         if (key == LV_KEY_ESC || key == LV_KEY_BACKSPACE) {
             if (wifi_task_) wifi_task_->cancelled = true;
             wifi_active_ = false;
@@ -909,11 +993,65 @@ private:
             } else if (next && wifi_selection_ + 1 < wifi_result_.networks.size()) {
                 ++wifi_selection_;
                 show_wifi();
-            } else if (key == LV_KEY_ENTER) {
+            } else if ((key == 'r' || key == 'R') ||
+                       (key == LV_KEY_ENTER && wifi_result_.networks.empty())) {
                 start_wifi_scan();
+            } else if (key == LV_KEY_ENTER && !wifi_result_.networks.empty()) {
+                wifi_stage_ = WifiStage::ChooseConnection;
+                toast_->show_persistent("Connect to " + wifi_result_.networks[wifi_selection_].name +
+                                        "\nS saved profile  N new profile\nESC back");
             }
         }
         return true;
+    }
+
+    void show_wifi_password(const std::string& notice = {}) {
+        std::string message = notice.empty() ? "" : notice + "\n";
+        message += "Wi-Fi password: " + std::string(wifi_password_.size(), '*') +
+                   "\nENTER next  ESC back";
+        toast_->show_persistent(message, notice.empty() ? view::widgets::ToastTone::Default
+                                                       : view::widgets::ToastTone::Warning);
+    }
+
+    void show_wifi_confirm() {
+        wifi_stage_ = WifiStage::Confirm;
+        toast_->show_persistent("Switch Wi-Fi to " + wifi_result_.networks[wifi_selection_].name +
+            (wifi_connect_mode_ == platform::WifiConnectMode::New
+                ? "\nNew profile saved by NetworkManager" : "\nUse saved profile") +
+            "\nENTER connect  ESC cancel");
+    }
+
+    void request_wifi_connection() {
+        auto task = std::make_shared<WifiTask>();
+        task->connecting = true;
+        wifi_task_ = task;
+        wifi_stage_ = WifiStage::Connecting;
+        const auto network = wifi_result_.networks[wifi_selection_];
+        const auto mode = wifi_connect_mode_;
+        std::string password = std::move(wifi_password_);
+        wifi_password_.clear();
+        toast_->show_persistent("Requesting Wi-Fi connection...\nPlease wait");
+        try {
+            wifi_thread_ = std::thread([task, network, mode, password = std::move(password)]() mutable {
+                std::string error;
+                try {
+                    error = platform::request_wifi_connection(network, mode, password);
+                } catch (const std::exception& exception) {
+                    error = std::string("Connection request failed: ") + exception.what();
+                }
+                std::fill(password.begin(), password.end(), '\0');
+                std::lock_guard<std::mutex> lock(task->mutex);
+                task->connection_error = std::move(error);
+                task->complete = true;
+            });
+        } catch (const std::system_error& error) {
+            std::fill(password.begin(), password.end(), '\0');
+            wifi_task_.reset();
+            wifi_stage_ = WifiStage::Notice;
+            toast_->show_persistent("Could not start connection: " + error.code().message() +
+                                        "\nENTER/ESC back",
+                                    view::widgets::ToastTone::Error);
+        }
     }
 
     void start_gatt_scan() {
@@ -3616,6 +3754,9 @@ private:
     std::size_t wifi_selection_{0};
     bool wifi_active_{false};
     bool wifi_scanning_{false};
+    WifiStage wifi_stage_{WifiStage::Results};
+    platform::WifiConnectMode wifi_connect_mode_{platform::WifiConnectMode::Saved};
+    std::string wifi_password_;
     std::shared_ptr<IrTask> ir_task_;
     std::thread ir_thread_;
     platform::IrReceiveResult ir_result_;

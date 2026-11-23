@@ -670,6 +670,15 @@ include(cmake/cm0-package.cmake)
 
 include(CTest)
 if(NOT USE_DESKTOP AND BUILD_TESTING)
+    add_executable(poseidon_wifi_connect_tests
+        tests/wifi_connect_linux_test.cpp
+        src/platform/wifi_scan.cpp
+    )
+    target_include_directories(poseidon_wifi_connect_tests PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/src/platform")
+    target_compile_definitions(poseidon_wifi_connect_tests PRIVATE USE_DESKTOP=0)
+    target_link_libraries(poseidon_wifi_connect_tests PRIVATE PkgConfig::CM0_GIO Threads::Threads)
+    add_test(NAME wifi-connect COMMAND poseidon_wifi_connect_tests)
+
     add_executable(poseidon_bluetooth_gatt_bluez_tests
         tests/bluetooth_gatt_bluez_test.cpp
         src/platform/bluetooth_gatt.cpp

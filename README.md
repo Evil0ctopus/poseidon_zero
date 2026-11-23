@@ -78,9 +78,17 @@ item, and `ESC` to return home. Press `?` or the device HELP key to open keyboar
 The WiFi menu includes the reference demo's entries in their original order. On the device,
 **Scan** requests a Wi-Fi scan through NetworkManager and shows the network name, address,
 signal, security, and channel when known; the desktop simulator reports it as unavailable.
-NetworkManager must authorize the launcher user to request scans. A non-interactive test as that
-user was denied by polkit on the connected device; the actual launcher context remains untested.
-The app reports authorization errors and does not change system policy.
+NetworkManager must authorize the launcher user to request scans. A scan from the installed app
+successfully listed networks on the connected device, although a non-interactive test as the same
+user was denied by polkit. The app reports authorization errors and does not change system policy.
+Select a result and press `ENTER`, then `S` to use a saved profile or `N` for a new one.
+New open, WPA/WPA2 personal, and WPA3-SAE profiles are supported; enterprise and WEP require
+an existing profile. Enter passwords on the device; they are masked and sent to NetworkManager,
+which stores new profiles and their credentials. New profiles do not automatically reconnect.
+Confirm with `ENTER` before switching networks. The app reports when a request is accepted, not
+that a connection has completed; check Wi-Fi status afterward. Saved-profile and new
+password-protected connections have been verified through the app on the connected device;
+the new-open-network path has only been tested against a mock. `R` rescans.
 The remaining reference-only entries are marked `[OFF]` and do not perform radio
 actions. Scroll past them for the Zero's existing Wi-Fi and Bluetooth
 status and GATT tools; the Zero **Wi-Fi discovery** entry opens the same scan. Letter keys jump to
