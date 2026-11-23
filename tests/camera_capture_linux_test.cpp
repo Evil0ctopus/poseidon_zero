@@ -1,4 +1,5 @@
 #include "camera_capture.h"
+#include "unique_file.h"
 
 #include <cstdio>
 #include <jpeglib.h>
@@ -59,6 +60,22 @@ int main() {
     const auto image_path = root / "image.jpg";
     bool passed = jpeg(image_path) &&
                   script(executable, "cat \"$(dirname \"$0\")/image.jpg\"");
+    const auto private_dir = root / "private";
+    const mode_t old_umask = umask(0);
+    const auto directory_error = platform::ensure_private_directory(private_dir);
+    umask(old_umask);
+    struct stat directory_stat{};
+    if (!directory_error.empty() || stat(private_dir.c_str(), &directory_stat) != 0 ||
+        (directory_stat.st_mode & 0777) != 0700 ||
+        !platform::ensure_private_directory(private_dir).empty()) {
+        std::cerr << "New save directories must remain private with a permissive umask\n";
+        passed = false;
+    }
+    if (chmod(private_dir.c_str(), 0777) != 0 ||
+        platform::ensure_private_directory(private_dir).empty()) {
+        std::cerr << "An existing writable-by-others directory must be rejected\n";
+        passed = false;
+    }
     const std::atomic_bool running{false};
     if (passed) {
         std::vector<uint8_t> original;
@@ -134,6 +151,8 @@ int main() {
     fs::remove(executable, cleanup_error);
     if (cleanup_error) passed = false;
     fs::remove(image_path, cleanup_error);
+    if (cleanup_error) passed = false;
+    fs::remove(private_dir, cleanup_error);
     if (cleanup_error) passed = false;
     fs::remove(root, cleanup_error);
     if (cleanup_error) passed = false;

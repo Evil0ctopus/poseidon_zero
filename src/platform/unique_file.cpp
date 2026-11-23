@@ -4,16 +4,36 @@
 #include <chrono>
 #include <cstring>
 #include <fcntl.h>
+#include <sys/stat.h>
 
 #if defined(_WIN32)
 #include <io.h>
 #include <share.h>
-#include <sys/stat.h>
 #else
 #include <unistd.h>
 #endif
 
 namespace platform {
+
+std::string ensure_private_directory(const std::filesystem::path& directory) {
+#if defined(_WIN32)
+    std::error_code error;
+    std::filesystem::create_directory(directory, error);
+    if (error) return error.message();
+    if (!std::filesystem::is_directory(directory, error))
+        return error ? error.message() : "Path is not a directory";
+#else
+    if (mkdir(directory.c_str(), 0700) != 0 && errno != EEXIST)
+        return std::strerror(errno);
+    struct stat status{};
+    if (lstat(directory.c_str(), &status) != 0) return std::strerror(errno);
+    if (!S_ISDIR(status.st_mode)) return "Path is not a directory";
+    if (status.st_uid != geteuid()) return "Directory must be owned by the current user";
+    if ((status.st_mode & (S_IWGRP | S_IWOTH)) != 0)
+        return "Directory must not be writable by other users";
+#endif
+    return {};
+}
 
 UniqueFile open_unique_file(const std::filesystem::path& directory,
                             const std::string& prefix, const std::string& suffix) {

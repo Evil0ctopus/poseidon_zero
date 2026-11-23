@@ -13,6 +13,7 @@ struct UniqueFile {
     std::string error;
 };
 
+std::string ensure_private_directory(const std::filesystem::path& directory);
 UniqueFile open_unique_file(const std::filesystem::path& directory,
                             const std::string& prefix, const std::string& suffix);
 std::string remove_incomplete_file(const std::filesystem::path& path);

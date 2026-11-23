@@ -78,6 +78,9 @@ item, and `ESC` to return home. Press `?` or the device HELP key to open keyboar
 The WiFi menu includes the reference demo's entries in their original order. On the device,
 **Scan** requests a Wi-Fi scan through NetworkManager and shows the network name, address,
 signal, security, and channel when known; the desktop simulator reports it as unavailable.
+NetworkManager must authorize the launcher user to request scans. A non-interactive test as that
+user was denied by polkit on the connected device; the actual launcher context remains untested.
+The app reports authorization errors and does not change system policy.
 The remaining reference-only entries are marked `[OFF]` and do not perform radio
 actions. Scroll past them for the Zero's existing Wi-Fi and Bluetooth
 status and GATT tools; the Zero **Wi-Fi discovery** entry opens the same scan. Letter keys jump to
@@ -101,8 +104,9 @@ desktop simulator reports this view as unsupported.
 The original camera JPEG may contain camera metadata. This is not a live preview. A compatible,
 accessible camera and
 the camera utility are required; the desktop simulator reports it as unsupported. Physical
-capture has been tested on the connected CardputerZero; the on-device viewer and photo-saving
-workflow still need verification. Publishing requires the store camera permission.
+capture and JPEG saving have been tested through the backend on the connected CardputerZero; the
+on-device viewer and save controls still need verification. Publishing requires the store camera
+permission.
 **Media → Music** browses local files and plays a selected regular WAV, MP3, or FLAC file at 50% volume;
 press `ESC` to stop and return to the browser. Audio-device and decoding errors are shown.
 **Media → Piano** plays short generated tones with `A S D F G H J K` (C4 through C5);
@@ -112,10 +116,13 @@ press `ESC` to exit. Playback errors are shown; this is a simple tone keyboard, 
 Filenames are lowercase; embedded track artwork is not supported. The Gallery image limits apply.
 **Media → Microphone** asks for confirmation before listening for five seconds and shows the peak
 level. It does not record or save audio; `ESC` cancels. An accessible microphone is required, and
-the app-store microphone permission must be configured before this feature is published.
+the app-store microphone permission must be configured before this feature is published. A
+five-second backend test received samples on the connected device; the UI remains unverified.
 **Media → Recorder** asks before recording five seconds in memory. Press `ENTER` afterward to save
 a mono 16 kHz WAV file in `~/poseidon-recordings`, or `ESC` to discard it. Saving creates a new file
 without overwriting an existing one; a save in progress must finish before leaving the screen.
+On Unix, new photo, recording, and IR folders are created with owner-only permissions; existing
+folders writable by other users are rejected rather than silently changing their permissions.
 In **System → Display brightness**, `Z`/`LEFT` and `C`/`RIGHT`
 adjust brightness in 5% steps; `ENTER` or `ESC` finishes. The control is available only when
 exactly one readable and writable device is exposed under `/sys/class/backlight`.

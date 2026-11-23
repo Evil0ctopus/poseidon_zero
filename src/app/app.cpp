@@ -25,6 +25,7 @@
 #include "base_viewmodel.h"
 #include "tool_status.h"
 #include "ui_sound.h"
+#include "unique_file.h"
 #include "usb_keyboard_simulator.h"
 #include "wifi_scan.h"
 #include "ir_receive.h"
@@ -583,10 +584,9 @@ private:
             microphone_thread_ = std::thread([task, directory] {
                 platform::RecordingSaveResult result;
                 try {
-                    std::error_code error;
-                    std::filesystem::create_directory(directory, error);
-                    if (error) {
-                        result.error = "Recording folder: " + error.message();
+                    const auto error = platform::ensure_private_directory(directory);
+                    if (!error.empty()) {
+                        result.error = "Recording folder: " + error;
                     } else {
                         result = platform::save_recording(directory, task->samples);
                     }
@@ -732,10 +732,9 @@ private:
             ir_thread_ = std::thread([task, directory] {
                 platform::IrSaveResult result;
                 try {
-                    std::error_code error;
-                    std::filesystem::create_directory(directory, error);
-                    if (error) {
-                        result.error = "IR folder: " + error.message();
+                    const auto error = platform::ensure_private_directory(directory);
+                    if (!error.empty()) {
+                        result.error = "IR folder: " + error;
                     } else {
                         result = platform::save_ir_capture(directory, task->result);
                     }
@@ -1612,9 +1611,8 @@ private:
             gallery_thread_ = std::thread([task, directory] {
                 platform::CameraSaveResult result;
                 try {
-                    std::error_code error;
-                    std::filesystem::create_directory(directory, error);
-                    if (error) result.error = "Photo folder: " + error.message();
+                    const auto error = platform::ensure_private_directory(directory);
+                    if (!error.empty()) result.error = "Photo folder: " + error;
                     else result = platform::save_camera_jpeg(directory, task->jpeg);
                 } catch (const std::exception& error) {
                     result.error = std::string("Photo save failed: ") + error.what();
