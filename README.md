@@ -39,7 +39,7 @@
     />
   </a>
 </p>
-POSEIDON-Zero brings a themed, swipeable interface and practical local utilities to the
+POSEIDON-Zero brings a themed, keyboard-first interface and practical local utilities to the
 CardputerZero. Desktop builds use an SDL simulator for UI preview; device builds use Linux and
 LVGL platform drivers. Features without a supported implementation are marked `[OFF]`.
 
@@ -56,6 +56,8 @@ The app uses a small MVVM-style structure around LVGL:
 
 Current UI:
 
+- Startup: a POSEIDON splash animation; press any key to skip it. The
+  `reduced_motion` setting shortens the sequence and stops the animated bars.
 - Home: category launcher for system status, network status, wireless status, infrared,
   expansion, tools, and media.
 - Category pages: keyboard-navigable, scrollable tool lists with status feedback for
@@ -72,11 +74,68 @@ Current UI:
   Zero Light.
 
 On tool pages, use `UP`/`DOWN` or `Z`/`C` to move through the list, `ENTER` to activate an
-item, and `ESC` to return home. In **System → Display brightness**, `Z`/`LEFT` and `C`/`RIGHT`
+item, and `ESC` to return home. Press `?` or the device HELP key to open keyboard help.
+The WiFi menu includes the reference demo's entries in their original order. On the device,
+**Scan** requests a Wi-Fi scan through NetworkManager and shows the network name, address,
+signal, security, and channel when known; the desktop simulator reports it as unavailable.
+NetworkManager must authorize the launcher user to request scans. A scan from the installed app
+successfully listed networks on the connected device, although a non-interactive test as the same
+user was denied by polkit. The app reports authorization errors and does not change system policy.
+Select a result and press `ENTER`, then `S` to use a saved profile or `N` for a new one.
+New open, WPA/WPA2 personal, and WPA3-SAE profiles are supported; enterprise and WEP require
+an existing profile. Enter passwords on the device; they are masked and sent to NetworkManager,
+which stores new profiles and their credentials. New profiles do not automatically reconnect.
+Confirm with `ENTER` before switching networks. The app reports when a request is accepted, not
+that a connection has completed; check Wi-Fi status afterward. Saved-profile and new
+password-protected connections have been verified through the app on the connected device;
+the new-open-network path has only been tested against a mock. `R` rescans.
+The remaining reference-only entries are marked `[OFF]` and do not perform radio
+actions. Scroll past them for the Zero's existing Wi-Fi and Bluetooth
+status and GATT tools; the Zero **Wi-Fi discovery** entry opens the same scan. Letter keys jump to
+reference entries; use Shift with C, X, or Z because
+the unshifted keys remain navigation controls. Press `TAB` to switch between the reference entries
+and the Zero tools. The position counter is relative to the selected section, and a short
+description appears beneath the WiFi list.
+**Infrared → IR receive** listens for one raw signal for up to 15 seconds and shows pulse and
+space durations. It does not transmit or save the signal. A compatible LIRC receiver and permission
+to read it are required; the desktop simulator reports reception as unsupported. The store's
+`additional_hardware` permission mapping must be confirmed before publishing this feature.
+**Infrared → Remote learn** receives raw timings and lets you press `S` to save a complete capture
+in `~/poseidon-ir`. Files identify the carrier as unknown; they cannot be replayed by this app.
+Truncated captures, including signals still arriving at the capture deadline, are not saved.
+**Expansion → Grove / I2C** lists I2C bus entries exposed by the device kernel. It does not
+probe addresses, open bus devices, identify Grove connectors, or control peripherals; the
+desktop simulator reports this view as unsupported.
+**Media → Camera** asks before capturing a single snapshot with the device's
+`/usr/bin/rpicam-still`. The image stays in memory unless you press `S` to save a new JPEG in
+`~/poseidon-photos`; `ESC` cancels capture or closes the image. Saving must finish before closing.
+The original camera JPEG may contain camera metadata. This is not a live preview. A compatible,
+accessible camera and
+the camera utility are required; the desktop simulator reports it as unsupported. Physical
+capture and JPEG saving have been tested through the backend on the connected CardputerZero; the
+on-device viewer and save controls still need verification. Publishing requires the store camera
+permission.
+**Media → Music** browses local files and plays a selected regular WAV, MP3, or FLAC file at 50% volume;
+press `ESC` to stop and return to the browser. Audio-device and decoding errors are shown.
+**Media → Piano** plays short generated tones with `A S D F G H J K` (C4 through C5);
+press `ESC` to exit. Playback errors are shown; this is a simple tone keyboard, not a sampled piano.
+**Media → Album art** lets you select a local WAV, MP3, or FLAC track and view a `cover`,
+`folder`, or `album` image (`.jpg`, `.jpeg`, or `.png`) alongside it, in that priority order.
+Filenames are lowercase; embedded track artwork is not supported. The Gallery image limits apply.
+**Media → Microphone** asks for confirmation before listening for five seconds and shows the peak
+level. It does not record or save audio; `ESC` cancels. An accessible microphone is required, and
+the app-store microphone permission must be configured before this feature is published. A
+five-second backend test received samples on the connected device; the UI remains unverified.
+**Media → Recorder** asks before recording five seconds in memory. Press `ENTER` afterward to save
+a mono 16 kHz WAV file in `~/poseidon-recordings`, or `ESC` to discard it. Saving creates a new file
+without overwriting an existing one; a save in progress must finish before leaving the screen.
+On Unix, new photo, recording, and IR folders are created with owner-only permissions; existing
+folders writable by other users are rejected rather than silently changing their permissions.
+In **System → Display brightness**, `Z`/`LEFT` and `C`/`RIGHT`
 adjust brightness in 5% steps; `ENTER` or `ESC` finishes. The control is available only when
 exactly one readable and writable device is exposed under `/sys/class/backlight`.
-**Tools → Layout toggle** switches all category lists between compact and larger, spacious rows;
-the choice is saved.
+**Tools → Layout toggle** cycles category lists through compact, spacious, and two-column grid
+layouts; the choice is saved.
 
 **Media → Gallery** browses local directories and opens PNG and JPEG images with `ENTER`; `ESC` returns
 to the listing. Images are read on a background worker and limited to 8 MiB on disk and
@@ -157,7 +216,7 @@ Theme startup behavior is configured in `config/poseidon-zero.conf`:
 
 ```ini
 [application]
-theme_id=11
+theme_id=0
 clock_24h=yes
 ```
 
@@ -169,6 +228,8 @@ existing configurations. Toggle it from **System → Clock format**; the title b
 update on the next clock refresh, and the choice is saved with the user configuration. The
 **Tools → Themes** picker previews palettes without saving until `ENTER`; `ESC` restores the
 previous palette.
+The startup and launcher logo is adapted from the POSEIDON-ADV demo; its license is in
+`assets/images/POSEIDON-LICENSE.txt`.
 Installed device builds use `/etc/poseidon-zero.conf` as the system default. Changing the theme
 from the navigation bar (keyboard shortcut `6`) or saving in the theme picker writes a per-user override to
 `$XDG_CONFIG_HOME/poseidon-zero/poseidon-zero.conf`, or `~/.config/poseidon-zero/poseidon-zero.conf`
@@ -434,6 +495,10 @@ cmake --build --preset cp0-cross-dbg
 # cmake --build --preset cp0-cross-rel
 ```
 
+When packaging from a Windows-mounted workspace in WSL, package staging on that mount may
+give every installed file world-writable permissions. Stage CPack on a Linux filesystem and
+inspect the resulting package permissions with `dpkg-deb -c` before installing it.
+
 Deploy the release package to your device after filling in your device user and IP:
 
 ```shell
@@ -530,8 +595,21 @@ USB keyboard and NFC workflows remain unavailable until their hardware interface
 **Network → Diagnostics** saves a sanitized support report in the home folder. **System** exposes
 memory, Wi-Fi, Bluetooth, Ethernet, storage, battery, clock, and
 brightness. **Network** shows local interface and gateway status, allows one manually entered ping
-or DNS lookup in the background, and can display the local ARP table. Port scanning and host
-discovery are not provided. **Wireless** exposes local Wi-Fi, signal, and Bluetooth status;
+or DNS lookup in the background, and can display the local ARP table. **Network → Port scan**
+accepts authorized hostnames, IPv4/IPv6 addresses, or CIDR ranges of at most 256 addresses.
+Choose TCP, UDP, or both, then common ports, all ports (1–65535), or custom comma-separated
+ports and ranges. Confirm before DNS and review resolved targets before confirming a scan.
+The common list is 21-23, 25, 53, 67-69, 80, 110, 123, 135, 137-139, 143, 161, 389,
+443, 445, 465, 500, 587, 631, 636, 993, 995, 1433, 1521, 1883, 1900, 2049, 3000,
+3306, 3389, 5000, 5353, 5432, 5900, 6379, 8000, 8080, 8443, and 8883.
+Use LEFT/RIGHT to browse targets or results, P to review the selected ports, ESC to cancel,
+and S to save a private report in
+`~/poseidon-reports`. Scans use at most 16 sockets, 50 launches per second, one-second
+timeouts, and retain at most 2,048 results; counts include omitted results. A silent UDP probe
+is **open or filtered**, not proof of an open port; services may ignore empty probes and
+firewalls or ICMP rate limiting can make results inconclusive. The desktop simulator does not
+perform real scans. Host discovery, spoofing and hijacking are not provided.
+**Wireless** exposes local Wi-Fi, signal, and Bluetooth status;
 additional ADV parity
 slots are shown as `[OFF]` placeholders. Selecting one only reports that it is unavailable; no
 scan, transmission, credential capture, input injection, or device-control action is performed.

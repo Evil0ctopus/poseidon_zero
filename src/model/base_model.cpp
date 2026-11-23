@@ -10,6 +10,45 @@
 
 namespace model {
 
+const std::array<WirelessReferenceItem, kWirelessReferenceItemCount> kWirelessReferenceItems = {{
+    {"Scan", 's', "Scan nearby access points"},
+    {"Clients", 'l', "Discover wireless clients"},
+    {"AP Clients", 'o', "List access point clients"},
+    {"Deauth", 'd', "Deauthentication tool"},
+    {"Deauth all", 'x', "Broadcast deauthentication tool"},
+    {"Deauth det.", 'e', "Detect deauthentication activity"},
+    {"AP Clone", 'c', "Access point clone"},
+    {"Portal", 'p', "Captive portal"},
+    {"Evil Twin", 'i', "Rogue access point"},
+    {"AP Signal Test", 't', "Test access point signal"},
+    {"Karma", 'k', "Probe response tool"},
+    {"Beacon spam", 'b', "Beacon broadcast tool"},
+    {"Probe sniff", 'r', "Observe probe requests"},
+    {"PMKID cap", 'm', "Capture authentication data"},
+    {"Spectrum", 'g', "View wireless spectrum"},
+    {"Wardrive", 'w', "Map wireless networks"},
+    {"Connect", 'n', "Connect to a wireless network"},
+    {"DefMon", 'y', "Wireless security monitor"},
+    {"Cable Guard", 'u', "Inspect for wireless cable implants"},
+    {"Surveil", 'v', "Surveillance device detector"},
+    {"CIW Zeroclick", 'z', "SSID injection demonstration"},
+}};
+
+int32_t wireless_reference_shortcut(uint32_t key) {
+    if (key == 'c' || key == 'x' || key == 'z') {
+        return -1;
+    }
+    if (key >= 'A' && key <= 'Z') {
+        key += 'a' - 'A';
+    }
+    for (std::size_t index = 0; index < kWirelessReferenceItems.size(); ++index) {
+        if (key == static_cast<uint32_t>(kWirelessReferenceItems[index].shortcut)) {
+            return static_cast<int32_t>(index);
+        }
+    }
+    return -1;
+}
+
 const char* BaseModel::app_title() const {
     return "POSEIDON";
 }
@@ -117,10 +156,7 @@ int32_t BaseModel::tool_selection() const {
 }
 
 void BaseModel::set_tool_selection(int32_t index) {
-    const int32_t max_selection =
-        current_page_ == AppPage::Tools ? kToolsPageItemCount - 1
-        : current_page_ == AppPage::Butter ? kSystemToolItemCount - 1
-                                           : kStandardToolItemCount - 1;
+    const int32_t max_selection = tool_item_count(current_page_) - 1;
     tool_selection_ = std::clamp(index, int32_t{0}, max_selection);
 }
 
