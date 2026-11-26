@@ -16,26 +16,25 @@ const std::array<WirelessReferenceItem, kWirelessReferenceItemCount> kWirelessRe
     {"AP Clients", 'o', "List access point clients"},
     {"Deauth", 'd', "Deauthentication tool"},
     {"Deauth all", 'x', "Broadcast deauthentication tool"},
-    {"Deauth det.", 'e', "Detect deauthentication activity"},
+    {"Deauth det.", 'e', "Receive deauth headers on a configured monitor interface"},
     {"AP Clone", 'c', "Access point clone"},
     {"Portal", 'p', "Captive portal"},
     {"Evil Twin", 'i', "Rogue access point"},
-    {"AP Signal Test", 't', "Test access point signal"},
+    {"AP Signal Test", 't', "Sample the current Wi-Fi signal"},
     {"Karma", 'k', "Probe response tool"},
     {"Beacon spam", 'b', "Beacon broadcast tool"},
-    {"Probe sniff", 'r', "Observe probe requests"},
+    {"Probe sniff", 'r', "Count probe headers on a configured monitor interface"},
     {"PMKID cap", 'm', "Capture authentication data"},
-    {"Spectrum", 'g', "View wireless spectrum"},
-    {"Wardrive", 'w', "Map wireless networks"},
+    {"Channel Survey", 'g', "Count visible access points by band and channel"},
+    {"Wardrive", 'w', "Record Wi-Fi and BLE with optional GPS"},
     {"Connect", 'n', "Connect to a wireless network"},
-    {"DefMon", 'y', "Wireless security monitor"},
+    {"AP monitor", 'y', "Compare Wi-Fi access point observations"},
     {"Cable Guard", 'u', "Inspect for wireless cable implants"},
-    {"Surveil", 'v', "Surveillance device detector"},
-    {"CIW Zeroclick", 'z', "SSID injection demonstration"},
+    {"Surveil", 'v', "Scan for unverified camera name hints"},
 }};
 
 int32_t wireless_reference_shortcut(uint32_t key) {
-    if (key == 'c' || key == 'x' || key == 'z') {
+    if (key == 'c' || key == 'x') {
         return -1;
     }
     if (key >= 'A' && key <= 'Z') {
@@ -122,6 +121,14 @@ bool BaseModel::grid_layout() const {
 
 void BaseModel::set_grid_layout(bool enabled) {
     grid_layout_ = enabled;
+}
+
+bool BaseModel::authorized_lab_mode() const {
+    return authorized_lab_mode_;
+}
+
+void BaseModel::set_authorized_lab_mode(bool enabled) {
+    authorized_lab_mode_ = enabled;
 }
 
 AppPage BaseModel::current_page() const {

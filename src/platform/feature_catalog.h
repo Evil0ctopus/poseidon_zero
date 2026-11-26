@@ -19,9 +19,10 @@ struct FeatureDefinition {
 };
 
 using FeatureList = std::array<FeatureDefinition, 8>;
-using ToolFeatureList = std::array<FeatureDefinition, 17>;
+using NetworkFeatureList = std::array<FeatureDefinition, 12>;
+using ToolFeatureList = std::array<FeatureDefinition, 22>;
 
-FeatureList network_features();
+NetworkFeatureList network_features();
 FeatureList wireless_features();
 FeatureList infrared_features();
 FeatureList expansion_features();

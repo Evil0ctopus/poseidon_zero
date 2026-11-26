@@ -217,18 +217,18 @@ void ButterScreen::build_content(lv_obj_t* content) {
     constexpr int32_t kStandardToolCount = model::kStandardToolItemCount;
     const int32_t tool_count = model::tool_item_count(view_model().current_page());
     const char* tools[kMaxToolCount] = {
-        "Memory",
-        "Wi-Fi",
-        "Bluetooth",
-        "Ethernet",
-        "Storage",
-        "Battery",
-        "Clock",
-        "Diagnostics",
-        "Flashlight",
-        "Dice / 8-ball",
-        "Screen test",
-        "Themes",
+        model::kSystemToolNames[0],
+        model::kSystemToolNames[1],
+        model::kSystemToolNames[2],
+        model::kSystemToolNames[3],
+        model::kSystemToolNames[4],
+        model::kSystemToolNames[5],
+        model::kSystemToolNames[6],
+        model::kSystemToolNames[7],
+        model::kSystemToolNames[8],
+        model::kSystemToolNames[9],
+        model::kSystemToolNames[10],
+        model::kSystemToolNames[11],
         "Ambient preview",
         "Layout toggle",
         "Screensaver toggle",
@@ -269,7 +269,10 @@ void ButterScreen::build_content(lv_obj_t* content) {
                 const auto features = platform::wireless_features();
                 for (int32_t index = 0; index < model::kWirelessReferenceItemCount; ++index) {
                     const auto& item = model::kWirelessReferenceItems[index];
-                    feature_available[index] = !USE_DESKTOP && index == 0;
+                    feature_available[index] = index == 15 ||
+                        (!USE_DESKTOP &&
+                         (index == 0 || index == 5 || index == 9 || index == 12 || index == 14 ||
+                          index == 16 || index == 17 || index == 19));
                     std::snprintf(feature_label_storage[index],
                                   sizeof(feature_label_storage[index]),
                                   feature_available[index] ? "[%c] %s" : "[%c] [OFF] %s",
@@ -393,10 +396,8 @@ void ButterScreen::build_content(lv_obj_t* content) {
         tools[3] = ethernet.present ? "Ethernet  available" : "Ethernet  unavailable";
         tools[4] = storage.micro_sd_present ? "Storage  available" : "Storage  no card";
         tools[5] = "Battery status";
-        tools[6] = "System clock";
-        tools[7] = "Display brightness";
-        tools[8] = "Themes";
-        tools[9] = "Clock format";
+        for (int32_t index = 6; index < model::kSystemToolItemCount; ++index)
+            tools[index] = model::kSystemToolNames[index];
     } else if (view_model().current_page() == model::AppPage::Network) {
         const auto interfaces = platform::list_network_interfaces();
         tools[0] = !interfaces.error.empty() ? "Interfaces  unavailable"

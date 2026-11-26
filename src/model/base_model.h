@@ -12,9 +12,15 @@
 namespace model {
 
 inline constexpr int32_t kStandardToolItemCount = 8;
-inline constexpr int32_t kSystemToolItemCount = 10;
-inline constexpr int32_t kToolsPageItemCount = 17;
-inline constexpr int32_t kWirelessReferenceItemCount = 21;
+inline constexpr int32_t kSystemToolItemCount = 12;
+inline constexpr std::array<const char*, kSystemToolItemCount> kSystemToolNames = {{
+    "Memory", "Wi-Fi", "Bluetooth", "Ethernet", "Storage", "Battery",
+    "System clock", "Display brightness", "Themes", "Clock format",
+    "Authorized lab mode", "Hardware readiness"
+}};
+inline constexpr int32_t kNetworkToolItemCount = 12;
+inline constexpr int32_t kToolsPageItemCount = 22;
+inline constexpr int32_t kWirelessReferenceItemCount = 20;
 inline constexpr int32_t kWirelessToolItemCount =
     kWirelessReferenceItemCount + kStandardToolItemCount;
 inline constexpr int32_t kMaxToolItemCount = kWirelessToolItemCount;
@@ -62,6 +68,7 @@ enum class AppPage {
 constexpr int32_t tool_item_count(AppPage page) {
     return page == AppPage::Tools ? kToolsPageItemCount
            : page == AppPage::Butter ? kSystemToolItemCount
+           : page == AppPage::Network ? kNetworkToolItemCount
            : page == AppPage::Wireless ? kWirelessToolItemCount
                                        : kStandardToolItemCount;
 }
@@ -87,6 +94,8 @@ public:
     bool screensaver_due(uint32_t inactive_ms) const;
     bool grid_layout() const;
     void set_grid_layout(bool enabled);
+    bool authorized_lab_mode() const;
+    void set_authorized_lab_mode(bool enabled);
 
     AppPage current_page() const;
     void set_current_page(AppPage page);
@@ -106,6 +115,7 @@ private:
     bool screensaver_enabled_{false};
     int32_t screensaver_palette_{0};
     bool grid_layout_{false};
+    bool authorized_lab_mode_{false};
     AppPage current_page_ = AppPage::Apple;
     int32_t menu_selection_ = 0;
     int32_t tool_selection_ = 0;

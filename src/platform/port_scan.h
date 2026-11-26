@@ -62,6 +62,7 @@ PortList parse_port_list(const std::string& input);
 PortList common_ports();
 std::string format_port_list(const std::vector<uint16_t>& ports);
 PortTargets resolve_port_targets(const std::string& input, const std::atomic_bool& cancelled);
+PortTargets numeric_port_targets(const std::string& input);
 PortScanResult scan_ports(const PortTargets& targets, const std::vector<uint16_t>& ports,
                           bool tcp, bool udp, PortScanProgress& progress);
 PortReportResult save_port_report(const std::filesystem::path& directory,

@@ -2,7 +2,7 @@
 
 namespace platform {
 
-FeatureList network_features() {
+NetworkFeatureList network_features() {
     return {{
         {"Interfaces", "View Wi-Fi, Ethernet, and USB-network state", FeatureRisk::Safe, true},
         {"Gateway", "View the configured default gateway", FeatureRisk::Safe, true},
@@ -17,6 +17,30 @@ FeatureList network_features() {
         {"Ethernet", "View and troubleshoot wired network state", FeatureRisk::Safe, true},
         {"ARP table", "Read the local address table", FeatureRisk::Safe, true},
         {"Diagnostics", "Save a sanitized local support report", FeatureRisk::Safe, true},
+        {"Internet check", "Check Cloudflare HTTPS connectivity", FeatureRisk::Authorized,
+#if USE_DESKTOP
+         false},
+#else
+         true},
+#endif
+        {"Host discovery", "Find responding hosts on an authorized network", FeatureRisk::Authorized,
+#if USE_DESKTOP
+         false},
+#else
+         true},
+#endif
+        {"Lab listener", "Log connection attempts on a selected lab address", FeatureRisk::Authorized,
+#if USE_DESKTOP
+         false},
+#else
+         true},
+#endif
+        {"HTTPS trust", "Check one authorized host's TLS certificate", FeatureRisk::Authorized,
+#if USE_DESKTOP
+         false},
+#else
+         true},
+#endif
     }};
 }
 
@@ -34,9 +58,13 @@ FeatureList wireless_features() {
          true},
 #endif
         {"Tracker scan",
-         "Unavailable; tracker identification is not implemented",
+         "Scan BLE for unverified FCB2 tracker indicators",
          FeatureRisk::Authorized,
+#if USE_DESKTOP
          false},
+#else
+         true},
+#endif
         {"Wi-Fi discovery",
          "Scan nearby access points through NetworkManager",
          FeatureRisk::Authorized,
@@ -70,7 +98,14 @@ FeatureList infrared_features() {
          "Disabled placeholder; no IR signals can be learned or replayed",
          FeatureRisk::Authorized,
          false},
-        {"LED test", "Unavailable; IR LED testing is not implemented", FeatureRisk::Experimental, false},
+        {"Receiver check",
+         "Check for a raw LIRC receiver without capturing or transmitting",
+         FeatureRisk::Safe,
+#if USE_DESKTOP
+         false},
+#else
+         true},
+#endif
         {"IR pranks",
          "Disabled placeholder; no disruptive IR transmission is performed",
          FeatureRisk::Experimental,
@@ -85,7 +120,7 @@ FeatureList infrared_features() {
 #endif
         {"IR transmit",
          "Disabled placeholder; transmission is not implemented",
-         FeatureRisk::Safe,
+         FeatureRisk::Authorized,
          false},
     }};
 }
@@ -105,29 +140,37 @@ FeatureList expansion_features() {
          FeatureRisk::Authorized,
          false},
         {"SPI / GPIO",
-         "Unavailable; no supported SPI hats or GPIO pins are exposed",
-         FeatureRisk::Authorized,
+         "List Linux-exposed SPI and GPIO nodes only; no probing or pin control",
+         FeatureRisk::Safe,
+#if USE_DESKTOP
          false},
+#else
+         true},
+#endif
         {"LoRa / Mesh",
-         "Unavailable; no supported radio or mesh workflow is configured",
+         "M5Stack Cap LoRa is compatible, but no LoRa or mesh driver is implemented",
          FeatureRisk::Experimental,
          false},
         {"Sub-GHz / CC1101",
-         "Disabled placeholder; no radio capture, replay, brute force, or jamming is available",
+         "No RF driver; NFC is separate; Hydra RF 924 Pro needs ADV's 18-pin header, no Zero adapter",
          FeatureRisk::Experimental,
          false},
         {"nRF24 / 2.4 GHz",
-         "Disabled placeholder; no radio scanning, HID injection, or jamming is available",
+         "No RF driver; Hydra RF 924 Pro requires ADV's 18-pin header; no verified Zero adapter",
          FeatureRisk::Experimental,
          false},
         {"nRF52 / Zigbee",
          "Unavailable; no supported external radio hardware is configured",
          FeatureRisk::Experimental,
          false},
-        {"NFC / USB-HID",
-         "Disabled placeholder; no RFID workflow or USB-HID payload is implemented",
-         FeatureRisk::Authorized,
+        {"NFC readiness",
+         "Read the ST25R3916 identity only; no NFC field, card scan, or USB-HID action",
+         FeatureRisk::Safe,
+#if USE_DESKTOP
          false},
+#else
+         true},
+#endif
     }};
 }
 
@@ -150,6 +193,21 @@ ToolFeatureList tools_features() {
         {"Screensaver toggle", "Enable or disable the inactivity screensaver", FeatureRisk::Safe, true},
         {"Screensaver picker", "Choose a color palette, theme colors, or moving clock", FeatureRisk::Safe, true},
         {"Sound settings", "Mute UI sounds or adjust their volume", FeatureRisk::Safe, true},
+        {"Local scripts", "Review and run trusted local scripts", FeatureRisk::Authorized,
+#if USE_DESKTOP
+         false},
+#else
+         true},
+#endif
+        {"Incident checklist", "Review incident response steps", FeatureRisk::Safe, true},
+        {"Security logs", "Review, export, or delete saved security logs", FeatureRisk::Safe, true},
+        {"ADS-B frame decoder", "Decode a manually entered DF17 frame; no receiver", FeatureRisk::Safe, true},
+        {"ADS-B receiver", "Receive 1090 MHz via rtl_adsb; optional local logging", FeatureRisk::Authorized,
+#if USE_DESKTOP
+         false},
+#else
+         true},
+#endif
     }};
 }
 

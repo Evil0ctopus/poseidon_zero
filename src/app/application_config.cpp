@@ -7,10 +7,14 @@
 #include "application_config.h"
 
 #include "base_model.h"
+#include "unique_file.h"
 
 #include <algorithm>
+#include <array>
+#include <cerrno>
 #include <charconv>
 #include <cctype>
+#include <cstring>
 #include <filesystem>
 #include <fstream>
 #include <system_error>
@@ -61,6 +65,76 @@ bool is_key(const std::string& line, const std::string& expected) {
            lowercase(trim(line.substr(0, separator))) == expected;
 }
 
+bool valid_favorites(const std::vector<std::string>& favorites) {
+    if (favorites.size() > kMaxFavorites) return false;
+    for (std::size_t i = 0; i < favorites.size(); ++i) {
+        const auto& favorite = favorites[i];
+        if (favorite.size() < 3 || favorite.size() > 80 ||
+            favorite[0] < '1' || favorite[0] > '7' || favorite[1] != ':')
+            return false;
+        for (std::size_t j = 2; j < favorite.size(); ++j) {
+            const auto c = static_cast<unsigned char>(favorite[j]);
+            if (c < 32 || c > 126 || c == '|' || c == '=') return false;
+        }
+        if (std::find(favorites.begin(), favorites.begin() + i, favorite) != favorites.begin() + i)
+            return false;
+    }
+    return true;
+}
+
+bool validate_config(const ApplicationConfig& config, std::string& error) {
+    if (config.accessory_profiles > kAccessoryProfileMask) {
+        error = "invalid accessory profiles";
+        return false;
+    }
+    if (!valid_favorites(config.favorites)) {
+        error = "invalid favorites";
+        return false;
+    }
+    if (config.theme_id < 0 || config.theme_id >= model::kThemeCount) {
+        error = "theme_id is outside the supported range";
+        return false;
+    }
+    if (config.screensaver_palette < 0 ||
+        config.screensaver_palette >= model::kScreensaverPaletteCount) {
+        error = "screensaver_palette is outside the supported range";
+        return false;
+    }
+    if (config.screensaver_style < 0 || config.screensaver_style > 4) {
+        error = "screensaver_style is outside the supported range";
+        return false;
+    }
+    if (config.sound_volume < 0 || config.sound_volume > 100) {
+        error = "sound_volume is outside the supported range";
+        return false;
+    }
+    return true;
+}
+
+std::array<std::string, 14> config_lines(const ApplicationConfig& config) {
+    std::string favorites = "favorites=";
+    for (const auto& favorite : config.favorites) {
+        if (favorites.size() > 10) favorites += '|';
+        favorites += favorite;
+    }
+    return {{
+        config.dark_mode ? "dark_mode=yes" : "dark_mode=no",
+        "theme_id=" + std::to_string(config.theme_id),
+        config.clock_24h ? "clock_24h=yes" : "clock_24h=no",
+        config.spacious_layout ? "spacious_layout=yes" : "spacious_layout=no",
+        config.grid_layout ? "grid_layout=yes" : "grid_layout=no",
+        "screensaver_style=" + std::to_string(config.screensaver_style),
+        config.sound_enabled ? "sound_enabled=yes" : "sound_enabled=no",
+        "sound_volume=" + std::to_string(config.sound_volume),
+        config.large_text ? "large_text=yes" : "large_text=no",
+        config.reduced_motion ? "reduced_motion=yes" : "reduced_motion=no",
+        config.screensaver_enabled ? "screensaver_enabled=yes" : "screensaver_enabled=no",
+        "screensaver_palette=" + std::to_string(config.screensaver_palette),
+        favorites,
+        "accessory_profiles=" + std::to_string(config.accessory_profiles)
+    }};
+}
+
 } // namespace
 
 bool load_application_config(const std::string& path,
@@ -95,6 +169,36 @@ bool load_application_config(const std::string& path,
         }
 
         const auto key = lowercase(trim(line.substr(0, separator)));
+        if (section == "application" && key == "accessory_profiles") {
+            const std::string value = trim(line.substr(separator + 1));
+            uint32_t profiles = 0;
+            const auto parsed = std::from_chars(value.data(), value.data() + value.size(), profiles);
+            if (parsed.ec != std::errc{} || parsed.ptr != value.data() + value.size() ||
+                profiles > kAccessoryProfileMask) {
+                error = "invalid accessory_profiles at line " + std::to_string(line_number);
+                return false;
+            }
+            config.accessory_profiles = profiles;
+        }
+        if (section == "application" && key == "favorites") {
+            const std::string value = trim(line.substr(separator + 1));
+            std::vector<std::string> favorites;
+            if (!value.empty()) {
+                std::size_t start = 0;
+                for (;;) {
+                    const auto end = value.find('|', start);
+                    favorites.push_back(value.substr(start, end - start));
+                    if (end == std::string::npos) break;
+                    start = end + 1;
+                    if (favorites.size() > kMaxFavorites) break;
+                }
+            }
+            if (!valid_favorites(favorites)) {
+                error = "invalid favorites at line " + std::to_string(line_number);
+                return false;
+            }
+            config.favorites = std::move(favorites);
+        }
         if (section == "application" && key == "dark_mode") {
             if (!parse_bool(line.substr(separator + 1), config.dark_mode)) {
                 error = "invalid dark_mode value at line " + std::to_string(line_number);
@@ -202,25 +306,7 @@ bool save_application_config(const std::string& path,
                              const ApplicationConfig& config,
                              std::string& error) {
     error.clear();
-    if (config.theme_id < 0 || config.theme_id >= model::kThemeCount) {
-        error = "theme_id is outside the supported range";
-        return false;
-    }
-    if (config.screensaver_palette < 0 ||
-        config.screensaver_palette >= model::kScreensaverPaletteCount) {
-        error = "screensaver_palette is outside the supported range";
-        return false;
-    }
-
-    if (config.screensaver_style < 0 || config.screensaver_style > 4) {
-        error = "screensaver_style is outside the supported range";
-        return false;
-    }
-
-    if (config.sound_volume < 0 || config.sound_volume > 100) {
-        error = "sound_volume is outside the supported range";
-        return false;
-    }
+    if (!validate_config(config, error)) return false;
 
     const std::filesystem::path config_path(path);
     const auto parent = config_path.parent_path();
@@ -255,23 +341,23 @@ bool save_application_config(const std::string& path,
     bool wrote_reduced_motion = false;
     bool wrote_screensaver_enabled = false;
     bool wrote_screensaver_palette = false;
-    const std::string dark_mode_line = config.dark_mode ? "dark_mode=yes" : "dark_mode=no";
-    const std::string theme_id_line = "theme_id=" + std::to_string(config.theme_id);
-    const std::string clock_24h_line = config.clock_24h ? "clock_24h=yes" : "clock_24h=no";
-    const std::string spacious_layout_line =
-        config.spacious_layout ? "spacious_layout=yes" : "spacious_layout=no";
-    const std::string grid_layout_line = config.grid_layout ? "grid_layout=yes" : "grid_layout=no";
-    const std::string screensaver_style_line =
-        "screensaver_style=" + std::to_string(config.screensaver_style);
-    const std::string sound_enabled_line = config.sound_enabled ? "sound_enabled=yes" : "sound_enabled=no";
-    const std::string sound_volume_line = "sound_volume=" + std::to_string(config.sound_volume);
-    const std::string large_text_line = config.large_text ? "large_text=yes" : "large_text=no";
-    const std::string reduced_motion_line =
-        config.reduced_motion ? "reduced_motion=yes" : "reduced_motion=no";
-    const std::string screensaver_enabled_line =
-        config.screensaver_enabled ? "screensaver_enabled=yes" : "screensaver_enabled=no";
-    const std::string screensaver_palette_line =
-        "screensaver_palette=" + std::to_string(config.screensaver_palette);
+    bool wrote_favorites = false;
+    bool wrote_accessory_profiles = false;
+    const auto settings = config_lines(config);
+    const auto& dark_mode_line = settings[0];
+    const auto& theme_id_line = settings[1];
+    const auto& clock_24h_line = settings[2];
+    const auto& spacious_layout_line = settings[3];
+    const auto& grid_layout_line = settings[4];
+    const auto& screensaver_style_line = settings[5];
+    const auto& sound_enabled_line = settings[6];
+    const auto& sound_volume_line = settings[7];
+    const auto& large_text_line = settings[8];
+    const auto& reduced_motion_line = settings[9];
+    const auto& screensaver_enabled_line = settings[10];
+    const auto& screensaver_palette_line = settings[11];
+    const auto& favorites_line = settings[12];
+    const auto& accessory_profiles_line = settings[13];
 
     for (const auto& current_line : lines) {
         const auto normalized = trim(current_line);
@@ -325,6 +411,14 @@ bool save_application_config(const std::string& path,
             if (in_application_section && !wrote_screensaver_palette) {
                 updated.push_back(screensaver_palette_line);
                 wrote_screensaver_palette = true;
+            }
+            if (in_application_section && !wrote_favorites) {
+                updated.push_back(favorites_line);
+                wrote_favorites = true;
+            }
+            if (in_application_section && !wrote_accessory_profiles) {
+                updated.push_back(accessory_profiles_line);
+                wrote_accessory_profiles = true;
             }
             in_application_section = is_section(current_line, "application");
             found_application_section = found_application_section || in_application_section;
@@ -414,6 +508,20 @@ bool save_application_config(const std::string& path,
             }
             continue;
         }
+        if (in_application_section && is_key(current_line, "favorites")) {
+            if (!wrote_favorites) {
+                updated.push_back(favorites_line);
+                wrote_favorites = true;
+            }
+            continue;
+        }
+        if (in_application_section && is_key(current_line, "accessory_profiles")) {
+            if (!wrote_accessory_profiles) {
+                updated.push_back(accessory_profiles_line);
+                wrote_accessory_profiles = true;
+            }
+            continue;
+        }
         updated.push_back(current_line);
     }
 
@@ -463,6 +571,12 @@ bool save_application_config(const std::string& path,
     if (!wrote_screensaver_palette) {
         updated.push_back(screensaver_palette_line);
     }
+    if (!wrote_favorites) {
+        updated.push_back(favorites_line);
+    }
+    if (!wrote_accessory_profiles) {
+        updated.push_back(accessory_profiles_line);
+    }
 
     std::ofstream output(path, std::ios::trunc);
     if (!output) {
@@ -478,6 +592,35 @@ bool save_application_config(const std::string& path,
     }
 
     return true;
+}
+
+SettingsBackup backup_application_settings(const std::filesystem::path& directory,
+                                            const ApplicationConfig& config) {
+    SettingsBackup result;
+    if (!validate_config(config, result.error)) return result;
+    result.error = platform::ensure_confidential_directory(directory);
+    if (!result.error.empty()) return result;
+    auto file = platform::open_unique_file(directory, "settings-backup-", ".ini");
+    if (!file.error.empty()) { result.error = file.error; return result; }
+    std::string contents = "[application]\n";
+    for (const auto& line : config_lines(config)) contents += line + '\n';
+    errno = 0;
+    if (std::fwrite(contents.data(), 1, contents.size(), file.stream.get()) != contents.size() ||
+        std::fflush(file.stream.get()) != 0)
+        result.error = std::string("Cannot write settings backup: ") +
+                       (errno ? std::strerror(errno) : "I/O error");
+    errno = 0;
+    if (std::fclose(file.stream.release()) != 0) {
+        if (!result.error.empty()) result.error += "; ";
+        result.error += std::string("Cannot close settings backup: ") +
+                        (errno ? std::strerror(errno) : "I/O error");
+    }
+    if (!result.error.empty()) {
+        result.error += platform::remove_incomplete_file(file.path);
+        return result;
+    }
+    result.path = file.path;
+    return result;
 }
 
 } // namespace app

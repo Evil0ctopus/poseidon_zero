@@ -1,5 +1,6 @@
 #pragma once
 
+#include "remote_id.h"
 #include <atomic>
 #include <string>
 #include <vector>
@@ -10,6 +11,9 @@ struct BluetoothDevice {
     std::string path;
     std::string address;
     std::string name;
+    bool remote_id_indicator{false};
+    RemoteIdData remote_id;
+    bool tracker_indicator{false};
 };
 
 struct GattEntry {
@@ -29,6 +33,7 @@ struct GattBrowseResult {
 };
 
 BluetoothScanResult scan_ble_devices(const std::atomic_bool& cancelled);
+std::vector<BluetoothDevice> tracker_indicator_devices(std::vector<BluetoothDevice> devices);
 GattBrowseResult browse_gatt(const BluetoothDevice& device,
                             const std::atomic_bool& cancelled);
 

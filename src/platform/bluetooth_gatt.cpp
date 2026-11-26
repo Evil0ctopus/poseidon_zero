@@ -2,6 +2,18 @@
 
 #include <algorithm>
 
+namespace platform {
+
+std::vector<BluetoothDevice> tracker_indicator_devices(std::vector<BluetoothDevice> devices) {
+    devices.erase(std::remove_if(devices.begin(), devices.end(),
+                                 [](const BluetoothDevice& device) {
+                                     return !device.tracker_indicator;
+                                 }), devices.end());
+    return devices;
+}
+
+} // namespace platform
+
 #if USE_DESKTOP
 
 namespace platform {
@@ -21,6 +33,8 @@ GattBrowseResult browse_gatt(const BluetoothDevice&, const std::atomic_bool&) {
 #include <gio/gio.h>
 
 #include <chrono>
+#include <cstdint>
+#include <map>
 #include <memory>
 #include <set>
 #include <thread>
@@ -143,7 +157,34 @@ bool device_properties(GVariant* objects, const std::string& path, GVariant** pr
 struct SeenDevices {
     std::string adapter;
     std::set<std::string> paths;
+    std::set<std::string> remote_id_paths;
+    std::map<std::string, RemoteIdData> remote_id;
+    std::set<std::string> tracker_paths;
 };
+
+bool has_tracker_service_data(GVariant* properties) {
+    if (!properties) return false;
+    Variant data(g_variant_lookup_value(properties, "ServiceData", G_VARIANT_TYPE("a{sv}")),
+                 g_variant_unref);
+    if (!data) return false;
+    Variant payload(g_variant_lookup_value(data.get(),
+        "0000fcb2-0000-1000-8000-00805f9b34fb", G_VARIANT_TYPE("ay")), g_variant_unref);
+    return static_cast<bool>(payload);
+}
+
+bool read_remote_id_service_data(GVariant* properties, RemoteIdData& result) {
+    if (!properties) return false;
+    Variant data(g_variant_lookup_value(properties, "ServiceData", G_VARIANT_TYPE("a{sv}")),
+                 g_variant_unref);
+    if (!data) return false;
+    Variant payload(g_variant_lookup_value(data.get(),
+        "0000fffa-0000-1000-8000-00805f9b34fb", G_VARIANT_TYPE("ay")), g_variant_unref);
+    if (!payload) return false;
+    gsize length = 0;
+    const auto* bytes = static_cast<const std::uint8_t*>(
+        g_variant_get_fixed_array(payload.get(), &length, sizeof(std::uint8_t)));
+    return update_remote_id(result, bytes, length, std::chrono::system_clock::now());
+}
 
 void device_signal(GDBusConnection*, const gchar*, const gchar* object_path,
                    const gchar* interface_name, const gchar*, GVariant* parameters,
@@ -151,6 +192,7 @@ void device_signal(GDBusConnection*, const gchar*, const gchar* object_path,
     auto& seen = *static_cast<SeenDevices*>(user_data);
     const gchar* path = object_path;
     bool is_device = false;
+    Variant changed_properties(nullptr, g_variant_unref);
     if (std::string(interface_name) == kObjects) {
         GVariant* raw_interfaces = nullptr;
         g_variant_get(parameters, "(&o@a{sa{sv}})", &path, &raw_interfaces);
@@ -159,6 +201,7 @@ void device_signal(GDBusConnection*, const gchar*, const gchar* object_path,
                                               G_VARIANT_TYPE("a{sv}")),
                        g_variant_unref);
         is_device = static_cast<bool>(device);
+        changed_properties = std::move(device);
     } else {
         const gchar* changed_interface = nullptr;
         GVariant* raw_changed = nullptr;
@@ -169,11 +212,20 @@ void device_signal(GDBusConnection*, const gchar*, const gchar* object_path,
         Variant invalidated(raw_invalidated, g_variant_unref);
         Variant rssi(g_variant_lookup_value(changed.get(), "RSSI", G_VARIANT_TYPE_INT16),
                      g_variant_unref);
-        is_device = std::string(changed_interface) == "org.bluez.Device1" && rssi;
+        const bool device_change = std::string(changed_interface) == "org.bluez.Device1";
+        is_device = device_change && rssi;
+        if (device_change) changed_properties = std::move(changed);
     }
-    if (is_device && path && std::string(path).find(seen.adapter + "/dev_") == 0 &&
-        seen.paths.size() < 256) {
-        seen.paths.insert(path);
+    if (path && std::string(path).find(seen.adapter + "/dev_") == 0 &&
+        (seen.paths.size() < 256 || seen.paths.count(path) != 0)) {
+        const bool remote_id = read_remote_id_service_data(changed_properties.get(),
+                                                           seen.remote_id[path]);
+        const bool tracker = has_tracker_service_data(changed_properties.get());
+        if (is_device || remote_id || tracker) seen.paths.insert(path);
+        if (remote_id) seen.remote_id_paths.insert(path);
+        if (tracker) seen.tracker_paths.insert(path);
+        if (!is_device && !remote_id && !tracker && seen.paths.count(path) == 0)
+            seen.remote_id.erase(path);
     }
 }
 
@@ -248,7 +300,7 @@ BluetoothScanResult scan_ble_devices(const std::atomic_bool& cancelled) {
         return result;
     }
 
-    SeenDevices seen{adapter, {}};
+    SeenDevices seen{adapter, {}, {}, {}, {}};
     const guint added = g_dbus_connection_signal_subscribe(
         bus.get(), kBluez, kObjects, "InterfacesAdded", "/", nullptr,
         G_DBUS_SIGNAL_FLAGS_NONE, device_signal, &seen, nullptr);
@@ -294,7 +346,10 @@ BluetoothScanResult scan_ble_devices(const std::atomic_bool& cancelled) {
                 }
                 Variant properties(raw_properties, g_variant_unref);
                 BluetoothDevice device{device_path, string_property(properties.get(), "Address"),
-                                       display_name(string_property(properties.get(), "Name"))};
+                                       display_name(string_property(properties.get(), "Name")),
+                                       seen.remote_id_paths.count(device_path) != 0,
+                                       seen.remote_id[device_path],
+                                       seen.tracker_paths.count(device_path) != 0};
                 if (!device.address.empty()) {
                     result.devices.push_back(std::move(device));
                     if (result.devices.size() == kMaxDevices) {

@@ -1,5 +1,8 @@
 #include "gallery_image.h"
 #include "camera_capture.h"
+#include "bluetooth_gatt.h"
+#include "expansion_inventory.h"
+#include "feature_catalog.h"
 #include "ir_receive.h"
 #include "linux_network.h"
 #include "port_scan.h"
@@ -92,6 +95,81 @@ bool write_jpeg(const std::filesystem::path& path, unsigned int width) {
 
 int main() {
     bool passed = true;
+    std::vector<platform::BluetoothDevice> devices(3);
+    devices[0].address = "first";
+    devices[1].address = "indicator";
+    devices[1].tracker_indicator = true;
+    devices[2].address = "last";
+    const auto indicators = platform::tracker_indicator_devices(devices);
+    if (indicators.size() != 1 || indicators[0].address != "indicator" ||
+        !platform::tracker_indicator_devices({}).empty()) {
+        std::cerr << "Tracker results must contain only FCB2 indicator observations\n";
+        passed = false;
+    }
+    if (!platform::is_ethernet_interface_type(1, false) ||
+        platform::is_ethernet_interface_type(1, true) ||
+        platform::is_ethernet_interface_type(772, false)) {
+        std::cerr << "Ethernet classification must exclude wireless and non-Ethernet types\n";
+        passed = false;
+    }
+    const auto internet = platform::check_internet();
+    if (internet.connected || internet.detail.empty()) {
+        std::cerr << "Desktop internet check must report unsupported without a network request\n";
+        passed = false;
+    }
+    if (platform::classify_expansion_node("spidev0.0") !=
+            platform::ExpansionNodeKind::Spi ||
+        platform::classify_expansion_node("gpiochip12") !=
+            platform::ExpansionNodeKind::Gpio ||
+        platform::classify_expansion_node("spidev0") !=
+            platform::ExpansionNodeKind::None ||
+        platform::classify_expansion_node("spidev0.x") !=
+            platform::ExpansionNodeKind::None ||
+        platform::classify_expansion_node("gpiochip") !=
+            platform::ExpansionNodeKind::None ||
+        platform::classify_expansion_node("ttyUSB0") !=
+            platform::ExpansionNodeKind::None) {
+        std::cerr << "Expansion inventory must recognize only SPI and GPIO device nodes\n";
+        passed = false;
+    }
+    if (platform::read_expansion_bus_inventory().error.empty()) {
+        std::cerr << "Desktop expansion inventory must report unsupported hardware\n";
+        passed = false;
+    }
+    platform::St25r3916Identity nfc_identity;
+    if (!platform::decode_st25r3916_identity(0x2A, nfc_identity) ||
+        nfc_identity.value != 0x2A ||
+        nfc_identity.revision != 2 ||
+        platform::decode_st25r3916_identity(0x28, nfc_identity) ||
+        platform::decode_st25r3916_identity(0xFF, nfc_identity)) {
+        std::cerr << "ST25R3916 identity decoding must accept a valid revision and reject invalid IDs\n";
+        passed = false;
+    }
+    const auto nfc_probe = platform::read_cap_nfc_identity();
+    if (nfc_probe.detected || nfc_probe.error.empty()) {
+        std::cerr << "Desktop NFC readiness must report unsupported hardware\n";
+        passed = false;
+    }
+    const auto expansion_features = platform::expansion_features();
+    for (const std::size_t index : {std::size_t{4}, std::size_t{5}}) {
+        const auto& feature = expansion_features[index];
+        const std::string description = feature.description;
+        if (feature.available ||
+            description.find("Hydra RF 924 Pro") == std::string::npos ||
+            description.find("18-pin") == std::string::npos ||
+            description.find("Zero adapter") == std::string::npos) {
+            std::cerr << "Hydra radio entries must remain disabled and identify the unverified adapter\n";
+            passed = false;
+        }
+    }
+    const auto& nfc_feature = expansion_features[7];
+    const std::string nfc_description = nfc_feature.description;
+    if (nfc_feature.available ||
+        nfc_description.find("identity") == std::string::npos ||
+        nfc_description.find("no NFC field") == std::string::npos) {
+        std::cerr << "Desktop NFC readiness must remain unavailable and describe its read-only scope\n";
+        passed = false;
+    }
     const auto parsed_ports = platform::parse_port_list("443,80-82,80");
     const auto all_ports = platform::parse_port_list("1-65535");
     if (!parsed_ports.error.empty() || parsed_ports.ports != std::vector<uint16_t>{80, 81, 82, 443} ||
@@ -143,6 +221,11 @@ int main() {
         passed = false;
     }
     std::atomic_bool ir_cancelled{false};
+    const auto ir_receiver = platform::inspect_ir_receiver();
+    if (ir_receiver.available || ir_receiver.error.empty()) {
+        std::cerr << "Desktop IR receiver diagnostics must report unsupported\n";
+        passed = false;
+    }
     if (platform::receive_ir(ir_cancelled).error.empty()) {
         std::cerr << "Desktop IR receive must report unsupported\n";
         passed = false;
@@ -160,7 +243,88 @@ int main() {
         std::cerr << "Wi-Fi frequencies must map to the correct channel or report unknown\n";
         passed = false;
     }
+    platform::WifiScanResult freshness;
+    platform::WifiScanNetwork fresh_ap;
+    fresh_ap.last_seen_boottime = 101;
+    if (platform::wifi_seen_during_scan(freshness, fresh_ap)) {
+        std::cerr << "Unknown scan start must not count as a fresh observation\n";
+        passed = false;
+    }
+    freshness.scan_started_boottime = 100;
+    if (!platform::wifi_seen_during_scan(freshness, fresh_ap)) {
+        std::cerr << "AP seen after scan start should be considered fresh\n";
+        passed = false;
+    }
+    fresh_ap.last_seen_boottime = 100;
+    if (platform::wifi_seen_during_scan(freshness, fresh_ap)) {
+        std::cerr << "Ambiguous same-second AP result must be excluded\n";
+        passed = false;
+    }
+    platform::WifiScanResult baseline_ap;
+    baseline_ap.scan_started_boottime = 100;
+    platform::WifiScanNetwork first;
+    first.address = "AA:BB:CC:DD:EE:01";
+    first.name = "Example";
+    first.frequency_mhz = 2412;
+    first.last_seen_boottime = 101;
+    baseline_ap.networks.push_back(first);
+    auto later_ap = baseline_ap;
+    later_ap.scan_started_boottime = 200;
+    later_ap.networks[0].last_seen_boottime = 201;
+    later_ap.networks[0].frequency_mhz = 2437;
+    auto added_ap = first;
+    added_ap.address = "aa:bb:cc:dd:ee:02";
+    added_ap.last_seen_boottime = 201;
+    later_ap.networks.push_back(added_ap);
+    const auto changes = platform::compare_wifi_observations(baseline_ap, later_ap);
+    if (!changes.error.empty() || changes.changed != 1 || changes.new_addresses != 1 ||
+        changes.not_seen != 0 || changes.details.size() != 2) {
+        std::cerr << "AP monitor must compare fresh address observations\n";
+        passed = false;
+    }
+    later_ap.networks[0].last_seen_boottime = 200;
+    const auto stale = platform::compare_wifi_observations(baseline_ap, later_ap);
+    if (stale.not_seen != 1 || stale.skipped != 1) {
+        std::cerr << "Stale AP observations must not count as present\n";
+        passed = false;
+    }
+    auto duplicate_baseline = baseline_ap;
+    duplicate_baseline.networks.push_back(duplicate_baseline.networks[0]);
+    auto duplicate_current = later_ap;
+    duplicate_current.networks[0].last_seen_boottime = 201;
+    const auto ambiguous = platform::compare_wifi_observations(duplicate_baseline, duplicate_current);
+    if (ambiguous.new_addresses != 1 || ambiguous.changed != 0 ||
+        ambiguous.not_seen != 0 || ambiguous.baseline_count != 0 ||
+        ambiguous.current_count != 1) {
+        std::cerr << "Duplicate AP addresses must not create spurious comparisons\n";
+        passed = false;
+    }
+    later_ap.scan_started_boottime = -1;
+    if (platform::compare_wifi_observations(baseline_ap, later_ap).error.empty()) {
+        std::cerr << "Missing scan freshness must be reported\n";
+        passed = false;
+    }
+    std::vector<platform::WifiScanNetwork> channel_networks(6);
+    channel_networks[0].frequency_mhz = 2412;
+    channel_networks[1].frequency_mhz = 2412;
+    channel_networks[2].frequency_mhz = 2437;
+    channel_networks[3].frequency_mhz = 5180;
+    channel_networks[4].frequency_mhz = 5955;
+    const auto channel_summary = platform::summarize_wifi_channels(channel_networks);
+    if (channel_summary.size() != 4 ||
+        channel_summary[0].band != "2.4 GHz" || channel_summary[0].channel != 1 ||
+        channel_summary[0].access_points != 2 ||
+        channel_summary[1].band != "2.4 GHz" || channel_summary[1].channel != 6 ||
+        channel_summary[2].band != "5 GHz" || channel_summary[2].channel != 36 ||
+        channel_summary[3].band != "6 GHz" || channel_summary[3].channel != 1) {
+        std::cerr << "Channel survey must count visible APs by band and omit unknown channels\n";
+        passed = false;
+    }
     platform::WifiScanNetwork security_fixture;
+    if (platform::wifi_hardening_advice(security_fixture).find("Open network") == std::string::npos) {
+        std::cerr << "Open Wi-Fi advice failed\n";
+        passed = false;
+    }
     if (platform::wifi_security(security_fixture) != platform::WifiSecurity::Open ||
         !platform::valid_wifi_password(platform::WifiSecurity::Open, "")) {
         std::cerr << "Open Wi-Fi must not require a password\n";
@@ -177,6 +341,10 @@ int main() {
         passed = false;
     }
     security_fixture.rsn_flags = 0x500;
+    if (platform::wifi_hardening_advice(security_fixture).find("transition") == std::string::npos) {
+        std::cerr << "Transition-mode advice failed\n";
+        passed = false;
+    }
     if (platform::wifi_security(security_fixture) != platform::WifiSecurity::Sae ||
         !platform::valid_wifi_password(platform::WifiSecurity::Sae, "x") ||
         platform::valid_wifi_password(platform::WifiSecurity::Sae, std::string(64, 'a'))) {
@@ -184,8 +352,23 @@ int main() {
         passed = false;
     }
     security_fixture.rsn_flags = 0x200;
+    if (platform::wifi_hardening_advice(security_fixture).find("Enterprise") == std::string::npos) {
+        std::cerr << "Enterprise advice failed\n";
+        passed = false;
+    }
     if (platform::wifi_security(security_fixture) != platform::WifiSecurity::Unsupported) {
         std::cerr << "Enterprise authentication must not be treated as a personal password\n";
+        passed = false;
+    }
+    security_fixture.rsn_flags = 0;
+    security_fixture.wpa_flags = 0x100;
+    if (platform::wifi_hardening_advice(security_fixture).find("Legacy WPA") == std::string::npos) {
+        std::cerr << "Legacy WPA advice failed\n";
+        passed = false;
+    }
+    security_fixture.wpa_flags = 0;
+    if (platform::wifi_hardening_advice(security_fixture).find("not determined") == std::string::npos) {
+        std::cerr << "Unknown security must not be presented as open or secure\n";
         passed = false;
     }
     std::atomic_bool scan_cancelled{false};

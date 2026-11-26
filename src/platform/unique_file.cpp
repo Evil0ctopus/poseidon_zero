@@ -1,5 +1,6 @@
 #include "unique_file.h"
 
+#include <algorithm>
 #include <cerrno>
 #include <chrono>
 #include <cstring>
@@ -9,11 +10,27 @@
 #if defined(_WIN32)
 #include <io.h>
 #include <share.h>
+#include <windows.h>
 #else
 #include <unistd.h>
 #endif
 
 namespace platform {
+
+bool is_unique_filename(const std::string& name, const std::string& prefix,
+                        const std::string& suffix) {
+    if (name.size() <= prefix.size() + suffix.size() ||
+        name.compare(0, prefix.size(), prefix) != 0 ||
+        name.compare(name.size() - suffix.size(), suffix.size(), suffix) != 0) return false;
+    const auto middle = name.substr(prefix.size(), name.size() - prefix.size() - suffix.size());
+    const std::size_t timestamp_start = middle[0] == '-' ? 1 : 0;
+    const auto dash = middle.find('-', timestamp_start);
+    if (dash == std::string::npos || dash == timestamp_start || dash + 1 == middle.size())
+        return false;
+    const auto digit = [](char ch) { return ch >= '0' && ch <= '9'; };
+    return std::all_of(middle.begin() + timestamp_start, middle.begin() + dash, digit) &&
+           std::all_of(middle.begin() + dash + 1, middle.end(), digit);
+}
 
 std::string ensure_private_directory(const std::filesystem::path& directory) {
 #if defined(_WIN32)
@@ -31,6 +48,24 @@ std::string ensure_private_directory(const std::filesystem::path& directory) {
     if (status.st_uid != geteuid()) return "Directory must be owned by the current user";
     if ((status.st_mode & (S_IWGRP | S_IWOTH)) != 0)
         return "Directory must not be writable by other users";
+#endif
+    return {};
+}
+
+std::string ensure_confidential_directory(const std::filesystem::path& directory) {
+    const auto error = ensure_private_directory(directory);
+    if (!error.empty()) return error;
+#if defined(_WIN32)
+    const DWORD attributes = GetFileAttributesW(directory.c_str());
+    if (attributes == INVALID_FILE_ATTRIBUTES)
+        return "Cannot inspect directory (error " + std::to_string(GetLastError()) + ")";
+    if ((attributes & FILE_ATTRIBUTE_REPARSE_POINT) != 0)
+        return "Directory must not be a reparse point";
+#else
+    struct stat status{};
+    if (lstat(directory.c_str(), &status) != 0) return std::strerror(errno);
+    if ((status.st_mode & (S_IRWXG | S_IRWXO)) != 0)
+        return "Directory must not be accessible to other users";
 #endif
     return {};
 }

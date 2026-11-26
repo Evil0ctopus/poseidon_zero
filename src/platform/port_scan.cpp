@@ -135,6 +135,13 @@ gboolean check_resolver(gpointer data) {
 
 } // namespace
 
+PortTargets numeric_port_targets(const std::string& input) {
+    bool numeric = false;
+    auto result = numeric_targets(input, numeric);
+    if (!numeric && result.error.empty()) result.error = "Enter a numeric IP or CIDR";
+    return result;
+}
+
 PortList parse_port_list(const std::string& input) {
     PortList result;
     if (input.empty() || input.size() > 4096) {

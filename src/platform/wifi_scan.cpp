@@ -1,8 +1,91 @@
 #include "wifi_scan.h"
 
 #include <algorithm>
+#include <cctype>
+#include <map>
+#include <set>
+#include <utility>
 
 namespace platform {
+
+bool wifi_seen_during_scan(const WifiScanResult& result, const WifiScanNetwork& network) {
+    return result.scan_started_boottime >= 0 && network.last_seen_boottime >= 0 &&
+           network.last_seen_boottime > result.scan_started_boottime;
+}
+
+WifiMonitorComparison compare_wifi_observations(const WifiScanResult& baseline,
+                                                const WifiScanResult& current) {
+    WifiMonitorComparison result;
+    if (!baseline.error.empty() || !current.error.empty()) {
+        result.error = "Cannot compare failed scans";
+        return result;
+    }
+    if (baseline.scan_started_boottime < 0 || current.scan_started_boottime < 0) {
+        result.error = "Scan freshness unavailable";
+        return result;
+    }
+    using Index = std::map<std::string, const WifiScanNetwork*>;
+    std::set<std::string> ambiguous;
+    auto build_index = [&](const WifiScanResult& scan) {
+        Index index;
+        for (const auto& network : scan.networks) {
+            std::string address = network.address;
+            bool valid = address.size() == 17;
+            for (std::size_t i = 0; valid && i < address.size(); ++i) {
+                const auto ch = static_cast<unsigned char>(address[i]);
+                valid = i % 3 == 2 ? ch == ':' : std::isxdigit(ch) != 0;
+                address[i] = static_cast<char>(std::tolower(ch));
+            }
+            if (!valid || !wifi_seen_during_scan(scan, network)) {
+                ++result.skipped;
+                continue;
+            }
+            const auto inserted = index.emplace(address, &network);
+            if (!inserted.second) {
+                inserted.first->second = nullptr;
+                ambiguous.insert(address);
+                ++result.skipped;
+            }
+        }
+        for (auto it = index.begin(); it != index.end();) {
+            if (!it->second) it = index.erase(it);
+            else ++it;
+        }
+        return index;
+    };
+    const auto previous = build_index(baseline);
+    const auto latest = build_index(current);
+    const auto comparable = [&](const auto& entry) {
+        return ambiguous.count(entry.first) == 0;
+    };
+    result.baseline_count = std::count_if(previous.begin(), previous.end(), comparable);
+    result.current_count = std::count_if(latest.begin(), latest.end(), comparable);
+    for (const auto& entry : latest) {
+        if (ambiguous.count(entry.first)) continue;
+        const auto old = previous.find(entry.first);
+        if (old == previous.end()) {
+            ++result.new_addresses;
+            result.details.push_back("Newly observed AP: " + entry.first);
+            continue;
+        }
+        const auto& left = *old->second;
+        const auto& right = *entry.second;
+        if (left.name != right.name || left.secured != right.secured ||
+            left.wpa_flags != right.wpa_flags || left.rsn_flags != right.rsn_flags ||
+            (left.frequency_mhz && right.frequency_mhz && left.frequency_mhz != right.frequency_mhz)) {
+            ++result.changed;
+            result.details.push_back("AP properties differ: " + entry.first);
+        }
+    }
+    for (const auto& entry : previous) {
+        if (ambiguous.count(entry.first)) continue;
+        if (latest.find(entry.first) == latest.end()) {
+            ++result.not_seen;
+            result.details.push_back("Not seen (unknown): " + entry.first);
+        }
+    }
+    return result;
+}
 
 int wifi_channel(uint32_t frequency_mhz) {
     if (frequency_mhz == 2484) return 14;
@@ -20,12 +103,70 @@ int wifi_channel(uint32_t frequency_mhz) {
     return -1;
 }
 
+std::vector<WifiChannelCount> summarize_wifi_channels(
+    const std::vector<WifiScanNetwork>& networks) {
+    std::map<std::pair<std::string, int>, std::size_t> counts;
+    for (const auto& network : networks) {
+        const auto frequency = network.frequency_mhz;
+        const int channel = wifi_channel(frequency);
+        if (channel < 0) continue;
+
+        const char* band = frequency >= 2412 && frequency <= 2484 ? "2.4 GHz"
+                         : frequency >= 4910 && frequency <= 4980 ? "4.9 GHz"
+                         : frequency >= 5005 && frequency <= 5895 ? "5 GHz"
+                         : frequency >= 5935 && frequency <= 7115 ? "6 GHz"
+                         : frequency >= 58320 && frequency <= 69120 ? "60 GHz"
+                                                                      : nullptr;
+        if (band) ++counts[{band, channel}];
+    }
+
+    std::vector<WifiChannelCount> summary;
+    summary.reserve(counts.size());
+    for (const auto& entry : counts) {
+        summary.push_back({entry.first.first, entry.first.second, entry.second});
+    }
+    std::sort(summary.begin(), summary.end(),
+              [](const WifiChannelCount& left, const WifiChannelCount& right) {
+                  if (left.access_points != right.access_points) {
+                      return left.access_points > right.access_points;
+                  }
+                  if (left.band != right.band) return left.band < right.band;
+                  return left.channel < right.channel;
+              });
+    return summary;
+}
+
 WifiSecurity wifi_security(const WifiScanNetwork& network) {
     const uint32_t flags = network.wpa_flags | network.rsn_flags;
     if (!network.secured && flags == 0) return WifiSecurity::Open;
     if (flags & 0x400U) return WifiSecurity::Sae;
     if (flags & 0x100U) return WifiSecurity::WpaPsk;
     return WifiSecurity::Unsupported;
+}
+
+std::string wifi_hardening_advice(const WifiScanNetwork& network) {
+    constexpr uint32_t psk = 0x100U;
+    constexpr uint32_t enterprise = 0x200U;
+    constexpr uint32_t sae = 0x400U;
+    if (!network.secured && !(network.wpa_flags | network.rsn_flags))
+        return "Open network advertised\nUse WPA3 or WPA2 where possible";
+    if ((network.rsn_flags & sae) && (network.rsn_flags & psk))
+        return "SAE/PSK transition\nConsider SAE-only with PMF";
+    if ((network.rsn_flags & sae) && network.wpa_flags)
+        return "SAE plus legacy WPA\nDisable legacy WPA if possible";
+    if (network.rsn_flags & sae)
+        return "SAE advertised\nVerify WPA3 and PMF settings";
+    if ((network.rsn_flags & psk) && network.wpa_flags)
+        return "WPA2 plus legacy WPA\nDisable legacy WPA if possible";
+    if (network.rsn_flags & psk)
+        return "WPA2 personal advertised\nConsider WPA3 and strong keys";
+    if ((network.rsn_flags & enterprise) && network.wpa_flags)
+        return "Enterprise plus legacy WPA\nDisable legacy WPA if possible";
+    if (network.rsn_flags & enterprise)
+        return "Enterprise authentication\nVerify certificates and policy";
+    if (network.wpa_flags && !network.rsn_flags)
+        return "Legacy WPA advertised\nUpgrade to WPA2 or WPA3";
+    return "Security not determined\nReview AP settings directly";
 }
 
 bool valid_wifi_password(WifiSecurity security, const std::string& password) {
@@ -70,6 +211,7 @@ std::string request_wifi_connection(const WifiScanNetwork&, WifiConnectMode,
 #include <chrono>
 #include <memory>
 #include <thread>
+#include <time.h>
 
 namespace platform {
 namespace {
@@ -213,6 +355,10 @@ WifiScanResult scan_wifi(const std::atomic_bool& cancelled) {
         return {};
     }
     const auto last_scan = g_variant_get_int64(previous.get());
+    timespec boot_time{};
+    if (clock_gettime(CLOCK_BOOTTIME, &boot_time) == 0) {
+        result.scan_started_boottime = boot_time.tv_sec;
+    }
     GVariantBuilder options;
     g_variant_builder_init(&options, G_VARIANT_TYPE("a{sv}"));
     auto requested = call(bus.get(), adapter.c_str(), kWireless, "RequestScan",
@@ -263,6 +409,7 @@ WifiScanResult scan_wifi(const std::atomic_bool& cancelled) {
         const gchar* address = nullptr;
         guint8 strength = 0;
         guint32 flags = 0, wpa = 0, rsn = 0, frequency = 0;
+        gint32 last_seen = -1;
         if (!ssid || !g_variant_lookup(properties.get(), "HwAddress", "&s", &address) ||
             !g_variant_lookup(properties.get(), "Strength", "y", &strength) ||
             !g_variant_lookup(properties.get(), "Frequency", "u", &frequency) ||
@@ -272,9 +419,10 @@ WifiScanResult scan_wifi(const std::atomic_bool& cancelled) {
             result.error = "Incomplete Wi-Fi access point data";
             break;
         }
+        g_variant_lookup(properties.get(), "LastSeen", "i", &last_seen);
         result.networks.push_back({safe_name(ssid.get()), address, strength,
                                    (flags & 1U) != 0 || wpa != 0 || rsn != 0, frequency,
-                                   adapter, path, wpa, rsn});
+                                   adapter, path, wpa, rsn, last_seen});
     }
     g_variant_iter_free(iterator);
     if (cancelled) return {};

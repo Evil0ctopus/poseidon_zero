@@ -455,7 +455,7 @@ target_link_libraries(${PROJECT_NAME}_platform
         Threads::Threads
 )
 if(USE_DESKTOP AND WIN32)
-    target_link_libraries(${PROJECT_NAME}_platform PUBLIC iphlpapi ws2_32)
+    target_link_libraries(${PROJECT_NAME}_platform PUBLIC iphlpapi ws2_32 bcrypt)
 endif()
 if(NOT USE_DESKTOP)
     target_link_libraries(${PROJECT_NAME}_platform PUBLIC PkgConfig::CM0_GIO)
@@ -600,6 +600,10 @@ target_link_libraries(logger
         ${PLATFORM_LIBS}
 )
 
+add_library(poseidon_qrcodegen STATIC "${LVGL_SOURCE_DIR}/src/libs/qrcode/qrcodegen.c")
+target_link_libraries(poseidon_qrcodegen PRIVATE lvgl)
+target_compile_definitions(poseidon_qrcodegen PRIVATE LV_USE_QRCODE=1)
+
 add_library(${PROJECT_NAME}_core STATIC
     ${APP_SOURCES}
 )
@@ -634,6 +638,7 @@ target_link_libraries(${PROJECT_NAME}_core
         ${PROJECT_NAME}_view
         ${PROJECT_NAME}_viewmodel
         ${PROJECT_NAME}_platform
+        poseidon_qrcodegen
 )
 
 if(USE_DESKTOP)
@@ -669,7 +674,124 @@ target_link_libraries(${PROJECT_NAME}
 include(cmake/cm0-package.cmake)
 
 include(CTest)
+if(BUILD_TESTING)
+    add_executable(poseidon_adsb_tests tests/adsb_test.cpp src/platform/adsb.cpp)
+    target_include_directories(poseidon_adsb_tests PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/src/platform")
+    add_test(NAME adsb COMMAND poseidon_adsb_tests)
+
+    add_executable(poseidon_readiness_tests
+        tests/readiness_test.cpp
+        src/platform/readiness.cpp
+        src/platform/device_status.cpp
+    )
+    target_include_directories(poseidon_readiness_tests PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/src/platform")
+    target_compile_definitions(poseidon_readiness_tests PRIVATE USE_DESKTOP=$<BOOL:${USE_DESKTOP}>)
+    add_test(NAME readiness COMMAND poseidon_readiness_tests)
+
+    add_executable(poseidon_esp32_monitor_frame_tests tests/esp32_monitor_frame_test.cpp)
+    target_include_directories(poseidon_esp32_monitor_frame_tests PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/firmware/esp32-c5-monitor/include")
+    add_test(NAME esp32-monitor-frame COMMAND poseidon_esp32_monitor_frame_tests)
+
+    add_executable(poseidon_wireless_event_monitor_tests
+        tests/wireless_event_monitor_test.cpp
+        src/platform/wireless_event_monitor.cpp
+        src/platform/esp32_monitor_serial.cpp
+        src/platform/unique_file.cpp
+    )
+    target_include_directories(poseidon_wireless_event_monitor_tests PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/src/platform")
+    target_compile_definitions(poseidon_wireless_event_monitor_tests PRIVATE USE_DESKTOP=$<BOOL:${USE_DESKTOP}>)
+    target_link_libraries(poseidon_wireless_event_monitor_tests PRIVATE Threads::Threads)
+    add_test(NAME wireless-event-monitor COMMAND poseidon_wireless_event_monitor_tests)
+    add_executable(poseidon_lab_honeypot_tests
+        tests/lab_honeypot_test.cpp
+        src/platform/lab_honeypot.cpp
+        src/platform/unique_file.cpp
+    )
+    target_include_directories(poseidon_lab_honeypot_tests PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/src/platform")
+    target_compile_definitions(poseidon_lab_honeypot_tests PRIVATE USE_DESKTOP=$<BOOL:${USE_DESKTOP}>)
+    target_link_libraries(poseidon_lab_honeypot_tests PRIVATE Threads::Threads)
+    add_test(NAME lab-honeypot COMMAND poseidon_lab_honeypot_tests)
+    add_executable(poseidon_gnss_tests
+        tests/gnss_test.cpp
+        src/platform/gnss.cpp
+    )
+    target_include_directories(poseidon_gnss_tests PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/src/platform")
+    target_compile_definitions(poseidon_gnss_tests PRIVATE USE_DESKTOP=$<BOOL:${USE_DESKTOP}>)
+    add_test(NAME gnss COMMAND poseidon_gnss_tests)
+    add_executable(poseidon_survey_file_tests
+        tests/survey_file_test.cpp
+        src/platform/survey_file.cpp
+        src/platform/unique_file.cpp
+    )
+    target_include_directories(poseidon_survey_file_tests PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/src/platform")
+    add_test(NAME survey-file COMMAND poseidon_survey_file_tests)
+    add_executable(poseidon_survey_qr_tests
+        tests/survey_qr_test.cpp
+        src/app/survey_qr.cpp
+        src/platform/survey_file.cpp
+        src/platform/unique_file.cpp
+    )
+    target_include_directories(poseidon_survey_qr_tests PRIVATE
+        "${CMAKE_CURRENT_SOURCE_DIR}/src/app" "${CMAKE_CURRENT_SOURCE_DIR}/src/platform")
+    target_link_libraries(poseidon_survey_qr_tests PRIVATE lvgl poseidon_qrcodegen)
+    add_test(NAME survey-qr COMMAND poseidon_survey_qr_tests)
+    add_executable(poseidon_survey_tests
+        tests/survey_test.cpp
+        src/platform/remote_id.cpp
+        src/platform/survey.cpp
+        src/platform/survey_file.cpp
+        src/platform/unique_file.cpp
+    )
+    target_include_directories(poseidon_survey_tests PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/src/platform")
+    target_compile_definitions(poseidon_survey_tests PRIVATE USE_DESKTOP=0)
+    target_link_libraries(poseidon_survey_tests PRIVATE Threads::Threads)
+    add_test(NAME survey COMMAND poseidon_survey_tests)
+endif()
 if(NOT USE_DESKTOP AND BUILD_TESTING)
+    add_executable(poseidon_dns_lookup_tests
+        tests/dns_lookup_linux_test.cpp src/platform/linux_network.cpp)
+    target_include_directories(poseidon_dns_lookup_tests PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/src/platform")
+    target_compile_definitions(poseidon_dns_lookup_tests PRIVATE USE_DESKTOP=0)
+    add_test(NAME dns-lookup COMMAND poseidon_dns_lookup_tests)
+
+    add_executable(poseidon_adsb_receiver_fixture tests/adsb_receiver_fixture.cpp)
+    add_executable(poseidon_adsb_receiver_tests
+        tests/adsb_receiver_test.cpp src/platform/adsb_receiver.cpp src/platform/adsb.cpp
+        src/platform/evidence_export.cpp src/platform/unique_file.cpp src/platform/gnss.cpp)
+    target_include_directories(poseidon_adsb_receiver_tests PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/src/platform")
+    target_compile_definitions(poseidon_adsb_receiver_tests PRIVATE USE_DESKTOP=0 POSEIDON_TEST_ADSB=1)
+    target_link_libraries(poseidon_adsb_receiver_tests PRIVATE PkgConfig::CM0_GIO Threads::Threads util)
+    add_test(NAME adsb-receiver COMMAND poseidon_adsb_receiver_tests $<TARGET_FILE:poseidon_adsb_receiver_fixture>)
+
+    add_executable(poseidon_esp32_monitor_serial_tests
+        tests/esp32_monitor_serial_linux_test.cpp
+        src/platform/esp32_monitor_serial.cpp
+        src/platform/wireless_event_monitor.cpp
+        src/platform/unique_file.cpp
+    )
+    target_include_directories(poseidon_esp32_monitor_serial_tests PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/src/platform")
+    target_compile_definitions(poseidon_esp32_monitor_serial_tests PRIVATE USE_DESKTOP=0 POSEIDON_TEST_ESP32=1)
+    target_link_libraries(poseidon_esp32_monitor_serial_tests PRIVATE Threads::Threads util)
+    add_test(NAME esp32-monitor-serial COMMAND poseidon_esp32_monitor_serial_tests)
+
+    add_executable(poseidon_gnss_linux_tests
+        tests/gnss_linux_test.cpp
+        src/platform/gnss.cpp
+    )
+    target_include_directories(poseidon_gnss_linux_tests PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/src/platform")
+    target_compile_definitions(poseidon_gnss_linux_tests PRIVATE USE_DESKTOP=0)
+    target_link_libraries(poseidon_gnss_linux_tests PRIVATE util)
+    add_test(NAME gnss-linux COMMAND poseidon_gnss_linux_tests)
+
+    add_executable(poseidon_local_script_tests
+        tests/local_script_linux_test.cpp
+        src/platform/local_script.cpp
+    )
+    target_include_directories(poseidon_local_script_tests PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/src/platform")
+    target_compile_definitions(poseidon_local_script_tests PRIVATE USE_DESKTOP=0)
+    target_link_libraries(poseidon_local_script_tests PRIVATE Threads::Threads)
+    add_test(NAME local-script COMMAND poseidon_local_script_tests)
+
     add_executable(poseidon_port_scan_tests
         tests/port_scan_linux_test.cpp
         src/platform/port_scan.cpp
@@ -679,6 +801,17 @@ if(NOT USE_DESKTOP AND BUILD_TESTING)
     target_compile_definitions(poseidon_port_scan_tests PRIVATE USE_DESKTOP=0)
     target_link_libraries(poseidon_port_scan_tests PRIVATE PkgConfig::CM0_GIO Threads::Threads)
     add_test(NAME port-scan COMMAND poseidon_port_scan_tests)
+
+    add_executable(poseidon_nmap_scan_tests
+        tests/nmap_scan_linux_test.cpp
+        src/platform/nmap_scan.cpp
+        src/platform/port_scan.cpp
+        src/platform/unique_file.cpp
+    )
+    target_include_directories(poseidon_nmap_scan_tests PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/src/platform")
+    target_compile_definitions(poseidon_nmap_scan_tests PRIVATE USE_DESKTOP=0 POSEIDON_NMAP_TESTING=1)
+    target_link_libraries(poseidon_nmap_scan_tests PRIVATE PkgConfig::CM0_GIO Threads::Threads)
+    add_test(NAME nmap-scan COMMAND poseidon_nmap_scan_tests)
 
     add_executable(poseidon_wifi_connect_tests
         tests/wifi_connect_linux_test.cpp
@@ -692,6 +825,7 @@ if(NOT USE_DESKTOP AND BUILD_TESTING)
     add_executable(poseidon_bluetooth_gatt_bluez_tests
         tests/bluetooth_gatt_bluez_test.cpp
         src/platform/bluetooth_gatt.cpp
+        src/platform/remote_id.cpp
     )
     target_include_directories(poseidon_bluetooth_gatt_bluez_tests
         PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/src/platform"
@@ -723,6 +857,17 @@ if(NOT USE_DESKTOP AND BUILD_TESTING)
     add_test(NAME ir-receive COMMAND poseidon_ir_receive_tests)
 endif()
 if(USE_DESKTOP AND BUILD_TESTING)
+    if(WIN32)
+        add_executable(poseidon_evidence_export_tests
+            tests/evidence_export_test.cpp
+            src/platform/evidence_export.cpp
+            src/platform/unique_file.cpp
+        )
+        target_include_directories(poseidon_evidence_export_tests PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/src/platform")
+        target_compile_definitions(poseidon_evidence_export_tests PRIVATE USE_DESKTOP=1)
+        target_link_libraries(poseidon_evidence_export_tests PRIVATE bcrypt)
+        add_test(NAME evidence-export COMMAND poseidon_evidence_export_tests)
+    endif()
     add_executable(poseidon_music_playback_tests
         tests/music_playback_test.cpp
         src/platform/microphone.cpp
@@ -783,7 +928,10 @@ if(USE_DESKTOP AND BUILD_TESTING)
 
     add_executable(poseidon_safe_tools_tests
         tests/safe_tools_test.cpp
+        src/platform/bluetooth_gatt.cpp
         src/platform/camera_capture.cpp
+        src/platform/expansion_inventory.cpp
+        src/platform/feature_catalog.cpp
         src/platform/gallery_image.cpp
         src/platform/gallery_jpeg.c
         src/platform/ir_receive.cpp
@@ -805,6 +953,20 @@ if(USE_DESKTOP AND BUILD_TESTING)
     target_compile_definitions(poseidon_safe_tools_tests PRIVATE USE_DESKTOP=1)
     add_test(NAME safe-tools COMMAND poseidon_safe_tools_tests)
 
+    add_executable(poseidon_network_inventory_tests
+        tests/network_inventory_test.cpp
+        src/platform/network_inventory.cpp
+        src/platform/nmap_scan.cpp
+        src/platform/port_scan.cpp
+        src/platform/unique_file.cpp
+    )
+    target_include_directories(poseidon_network_inventory_tests PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/src/platform")
+    target_compile_definitions(poseidon_network_inventory_tests PRIVATE USE_DESKTOP=1)
+    if(WIN32)
+        target_link_libraries(poseidon_network_inventory_tests PRIVATE ws2_32)
+    endif()
+    add_test(NAME network-inventory COMMAND poseidon_network_inventory_tests)
+
     add_executable(poseidon_model_navigation_tests
         tests/model_navigation_test.cpp
         src/model/base_model.cpp
@@ -818,11 +980,13 @@ if(USE_DESKTOP AND BUILD_TESTING)
     add_executable(poseidon_application_config_tests
         tests/application_config_test.cpp
         src/app/application_config.cpp
+        src/platform/unique_file.cpp
     )
     target_include_directories(poseidon_application_config_tests
         PRIVATE
             "${CMAKE_CURRENT_SOURCE_DIR}/src/app"
             "${CMAKE_CURRENT_SOURCE_DIR}/src/model"
+            "${CMAKE_CURRENT_SOURCE_DIR}/src/platform"
     )
     add_test(NAME application-config COMMAND poseidon_application_config_tests)
 endif()

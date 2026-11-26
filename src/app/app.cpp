@@ -7,12 +7,15 @@
 #include "app.h"
 
 #include "application_config.h"
+#include "adsb.h"
+#include "adsb_receiver.h"
 #include "asset_manager.h"
 #include "backlight.h"
 #include "bluetooth_gatt.h"
 #include "camera_capture.h"
 #include "capabilities.h"
 #include "device_status.h"
+#include "wireless_event_monitor.h"
 #include "help_popup.h"
 #include "logger.h"
 #include "linux_input.h"
@@ -22,6 +25,9 @@
 #include "safe_tools.h"
 #include "screen_manager.h"
 #include "storage_status.h"
+#include "survey.h"
+#include "survey_file.h"
+#include "survey_qr.h"
 #include "base_viewmodel.h"
 #include "tool_status.h"
 #include "ui_sound.h"
@@ -30,8 +36,14 @@
 #include "wifi_scan.h"
 #include "ir_receive.h"
 #include "linux_network.h"
+#include "lab_honeypot.h"
+#include "network_inventory.h"
+#include "evidence_export.h"
+#include "local_script.h"
 #include "port_scan.h"
+#include "readiness.h"
 #include "feature_catalog.h"
+#include "expansion_inventory.h"
 #include "gallery_image.h"
 #include "theme.h"
 #include "toast.h"
@@ -41,6 +53,7 @@
 #include <array>
 #include <atomic>
 #include <chrono>
+#include <charconv>
 #include <cmath>
 #include <cstdint>
 #include <cstdlib>
@@ -51,6 +64,7 @@
 #include <exception>
 #include <memory>
 #include <mutex>
+#include <numeric>
 #include <random>
 #include <stdexcept>
 #include <string>
@@ -88,6 +102,120 @@
 
 namespace app {
 namespace {
+
+std::string adsb_velocity_text(const platform::AdsbFrame& frame) {
+    std::string text;
+    if (frame.speed_available) {
+        const char* label = frame.speed_type == platform::AdsbSpeedType::Ground ? "GS" :
+                            frame.speed_type == platform::AdsbSpeedType::TrueAirspeed ? "TAS" : "IAS";
+        text += "\n" + std::string(label) + ": " + std::to_string(std::lround(frame.speed_knots)) + " kt";
+    }
+    if (frame.direction_available) {
+        const char* label = frame.speed_type == platform::AdsbSpeedType::Ground ? "Track" : "Mag hdg";
+        text += frame.speed_available ? "  " : "\n";
+        text += std::string(label) + ": " + std::to_string(std::lround(frame.direction_degrees) % 360) + " deg";
+    }
+    if (frame.vertical_rate_available)
+        text += std::string("\n") + (frame.vertical_rate_barometric ? "Baro" : "GNSS") +
+                " rate: " + std::to_string(frame.vertical_rate_fpm) + " ft/min";
+    return text;
+}
+
+std::string adsb_status_text(const platform::AdsbFrame& frame) {
+    if (!frame.emergency_status_available) return {};
+    static constexpr const char* labels[] = {
+        "No emergency", "General emergency", "Medical priority", "Minimum fuel",
+        "No communications", "Unlawful interference", "Downed aircraft", "Reserved"
+    };
+    if (frame.emergency_status >= sizeof(labels) / sizeof(labels[0]))
+        return "\nStatus: invalid";
+    std::string text = "\nReported: " + std::string(labels[frame.emergency_status]);
+    text += frame.squawk.empty() ? "\nSquawk unavailable" : "\nSquawk: " + frame.squawk;
+    return text;
+}
+
+std::string adsb_category_text(const platform::AdsbFrame& frame) {
+    static constexpr const char* categories[][8] = {
+        {"", "Emergency vehicle", "Service vehicle", "Point obstacle", "Obstacle cluster",
+         "Line obstacle", "Reserved", "Reserved"},
+        {"", "Glider", "Lighter than air", "Parachutist", "Ultralight",
+         "Reserved", "Unmanned aircraft", "Space vehicle"},
+        {"", "Light aircraft", "Small aircraft", "Large aircraft", "High vortex aircraft",
+         "Heavy aircraft", "High performance", "Rotorcraft"}
+    };
+    if (frame.type_code < 2 || frame.type_code > 4 ||
+        frame.emitter_category <= 0 || frame.emitter_category > 7)
+        return {};
+    return "\nCategory: " + std::string(categories[frame.type_code - 2][frame.emitter_category]);
+}
+
+std::string adsb_frame_details(const platform::AdsbFrame& frame) {
+    std::string text;
+    if (!frame.callsign.empty()) text += "\nCallsign: " + frame.callsign;
+    text += adsb_category_text(frame);
+    if (frame.altitude_available)
+        text += "\nBaro: " + std::to_string(frame.altitude_feet) + " ft";
+    text += adsb_velocity_text(frame);
+    text += adsb_status_text(frame);
+    if (frame.position_available) {
+        char coordinates[64];
+        const int length = std::snprintf(coordinates, sizeof(coordinates), "%.4f, %.4f",
+                                         frame.latitude, frame.longitude);
+        if (length > 0 && static_cast<std::size_t>(length) < sizeof(coordinates))
+            text += "\nReported: " + std::string(coordinates);
+    }
+    return text;
+}
+
+const char* favorite_tool_name(model::AppPage page, int32_t index) {
+    if (index < 0 || index >= model::tool_item_count(page)) return nullptr;
+    switch (page) {
+        case model::AppPage::Butter: return model::kSystemToolNames[index];
+        case model::AppPage::Network: return platform::network_features()[index].name;
+        case model::AppPage::Wireless:
+            return index < model::kWirelessReferenceItemCount
+                ? model::kWirelessReferenceItems[index].label
+                : platform::wireless_features()[index - model::kWirelessReferenceItemCount].name;
+        case model::AppPage::Infrared: return platform::infrared_features()[index].name;
+        case model::AppPage::Expansion: return platform::expansion_features()[index].name;
+        case model::AppPage::Tools: return platform::tools_features()[index].name;
+        case model::AppPage::Media: return platform::media_features()[index].name;
+        default: return nullptr;
+    }
+}
+
+std::string favorite_id(model::AppPage page, int32_t index) {
+    const char* name = favorite_tool_name(page, index);
+    if (!name) return {};
+    return std::to_string(static_cast<int>(page)) + ":" + name;
+}
+
+const char* favorite_page_name(char page) {
+    switch (page) {
+        case '1': return "System";
+        case '2': return "Network";
+        case '3': return "Wireless";
+        case '4': return "Infrared";
+        case '5': return "Expansion";
+        case '6': return "Tools";
+        case '7': return "Media";
+        default: return "Unknown";
+    }
+}
+
+struct AccessoryProfile {
+    const char* name;
+    const char* guidance;
+};
+
+constexpr std::array<AccessoryProfile, 5> kAccessoryProfiles = {{
+    {"GPS Cap", "GNSS serial path required"},
+    {"Wireless-Tag ESP32-C5", "2.4 GHz; firmware unverified"},
+    {"Monster C5", "2.4 GHz; firmware unverified"},
+    {"RTL-SDR", "ADS-B needs rtl_adsb"},
+    {"nRF24", "No supported radio driver"}
+}};
+static_assert(kAccessoryProfileMask == (uint32_t{1} << kAccessoryProfiles.size()) - 1);
 
 void quit_requested_observer(lv_observer_t* observer, lv_subject_t* subject) {
     auto* running = static_cast<bool*>(lv_observer_get_user_data(observer));
@@ -291,6 +419,7 @@ public:
                        ThemePersistence& theme_persistence,
                        BootSplash& boot_splash)
         : view_model_(view_model),
+          assets_(assets),
           theme_persistence_(theme_persistence),
           boot_splash_(boot_splash),
           ui_sound_(assets.resolve("audio/click.wav").string()),
@@ -328,6 +457,21 @@ public:
         if (wifi_thread_.joinable()) {
             wifi_thread_.join();
         }
+        if (survey_session_) survey_session_->stop();
+        survey_session_.reset();
+        if (surveillance_task_) surveillance_task_->cancelled = true;
+        if (surveillance_thread_.joinable()) surveillance_thread_.join();
+        if (lab_listener_) lab_listener_->stop();
+        lab_listener_.reset();
+        if (wireless_event_monitor_) wireless_event_monitor_->stop();
+        wireless_event_monitor_.reset();
+        if (lab_export_thread_.joinable()) lab_export_thread_.join();
+        if (security_log_thread_.joinable()) security_log_thread_.join();
+        if (survey_file_task_) survey_file_task_->cancelled = true;
+        if (survey_file_thread_.joinable()) survey_file_thread_.join();
+        if (note_task_) note_task_->cancelled = true;
+        if (note_thread_.joinable()) note_thread_.join();
+        if (settings_backup_thread_.joinable()) settings_backup_thread_.join();
         if (port_task_) port_task_->progress.cancelled = true;
         if (port_thread_.joinable()) port_thread_.join();
         if (gatt_task_) {
@@ -342,12 +486,18 @@ public:
         if (network_thread_.joinable()) {
             network_thread_.join();
         }
+        adsb_receiver_.reset();
+        if (readiness_thread_.joinable()) readiness_thread_.join();
+        if (script_task_) script_task_->cancelled = true;
+        if (script_thread_.joinable()) script_thread_.join();
         if (file_task_) {
             file_task_->cancelled = true;
         }
         if (file_thread_.joinable()) {
             file_thread_.join();
         }
+        if (file_hash_task_) file_hash_task_->cancelled = true;
+        if (file_hash_thread_.joinable()) file_hash_thread_.join();
         if (gallery_task_) {
             gallery_task_->cancelled = true;
         }
@@ -358,12 +508,23 @@ public:
     }
 
     void update() {
+        update_adsb_receiver();
+        update_readiness();
         update_network_query();
+        update_script();
         update_gatt();
         update_wifi();
+        update_survey();
+        update_field_notes();
+        update_settings_backup();
+        update_surveillance();
+        update_lab_listener();
+        update_wireless_event_monitor();
+        update_security_logs();
         update_port_scan();
         update_ir();
         update_file_browser();
+        update_file_hash();
         update_gallery_image();
         update_music();
         update_microphone();
@@ -398,6 +559,12 @@ public:
                  !chance_tool_active_ && !brightness_adjustment_ &&
                  text_tool_mode_ == TextToolMode::None &&
                  gatt_stage_ == GattStage::None && !wifi_active_ && !wifi_task_ &&
+                 survey_stage_ == SurveyStage::None &&
+                 surveillance_stage_ == SurveillanceStage::None &&
+                 lab_listener_stage_ == LabListenerStage::None &&
+                 wireless_event_stage_ == WirelessEventStage::None &&
+                 security_log_stage_ == SecurityLogStage::None &&
+                 !ap_signal_test_active_ &&
                  port_stage_ == PortStage::None && !port_task_ &&
                  !ir_active_ && !ir_task_ && !network_query_ &&
                  !help_popup_->visible() && !toast_->visible() &&
@@ -411,8 +578,35 @@ private:
         None,
         Calculator,
         Morse,
+        Adsb,
         Ping,
         Dns,
+        Https,
+    };
+
+    enum class LabListenerStage { None, Address, Confirm, Running };
+    enum class WirelessEventStage { None, Interface, Channel, Confirm, Running };
+    enum class SecurityLogStage { None, Working, List, ConfirmDelete, ConfirmExport, ConfirmDeleteAll, Notice };
+    enum class SecurityLogAction { List, Delete, Export, ListExports, DeleteExport, DeleteAllExports };
+
+    struct ReadinessTask {
+        std::atomic_bool complete{false};
+        platform::ReadinessReport report;
+        std::string error;
+    };
+
+    struct SecurityLogTask {
+        std::atomic_bool complete{false};
+        SecurityLogAction action{SecurityLogAction::List};
+        platform::SecurityLogList logs;
+        platform::EvidenceFileList exports;
+        std::string error;
+    };
+
+    struct LabExportTask {
+        std::atomic_bool complete{false};
+        bool deleting{false};
+        platform::EvidenceExportResult result;
     };
 
     enum class VisualToolMode {
@@ -425,6 +619,9 @@ private:
         ScreensaverAmbient,
         ScreensaverClock,
         Gallery,
+        SurveyPlot,
+        SurveyMap,
+        SurveyQr,
     };
 
     enum class FileMode {
@@ -433,6 +630,16 @@ private:
         Music,
         AlbumArt,
         I2c,
+        Scripts,
+    };
+
+    enum class ScriptStage { None, Loading, Preview, Confirm, Running, Result };
+    struct ScriptTask {
+        std::atomic_bool cancelled{false};
+        std::atomic_bool complete{false};
+        bool loading{false};
+        platform::LocalScript script;
+        platform::ScriptResult result;
     };
 
     struct NetworkQueryState {
@@ -440,6 +647,9 @@ private:
         std::string host;
         std::string result;
         bool dns{false};
+        bool https{false};
+        bool internet{false};
+        bool connected{false};
         bool complete{false};
     };
 
@@ -448,8 +658,15 @@ private:
         std::mutex mutex;
         std::filesystem::path directory;
         std::size_t offset{0};
+        bool create_directory{false};
         platform::DirectoryResult result;
         bool complete{false};
+    };
+
+    struct FileHashTask {
+        std::atomic_bool cancelled{false};
+        std::atomic_bool complete{false};
+        platform::FileHashResult result;
     };
 
     struct GalleryQueryState {
@@ -459,12 +676,17 @@ private:
         bool complete{false};
         bool camera{false};
         bool saving{false};
+        bool survey_map{false};
+        platform::SurveyMapTile map_tile;
+        std::string map_attribution;
+        std::vector<uint32_t> map_attribution_glyphs;
         std::vector<uint8_t> jpeg;
         platform::CameraSaveResult save_result;
     };
 
     enum class GattStage {
         None,
+        ConfirmTracker,
         Scanning,
         Devices,
         Connecting,
@@ -491,16 +713,72 @@ private:
         platform::WifiScanResult result;
     };
 
-    enum class WifiStage { Results, ChooseConnection, Password, Confirm, Connecting, Notice };
+    enum class SurveillanceStage { None, Confirm, Scanning, Results };
+    struct SurveillanceTask {
+        std::atomic_bool cancelled{false};
+        std::atomic_bool complete{false};
+        platform::SurveillanceScanResult result;
+    };
 
-    enum class PortStage { None, Target, Protocol, Ports, Custom, DnsConsent, Resolving,
-                           Review, ReviewPorts, Scanning, Results, Saving, Notice };
+    enum class WifiStage { Results, SecurityAdvice, ChooseConnection, Password, Confirm, Connecting, Notice };
+
+    enum class SurveyStage { None, Home, Running, Stopping, Sessions, Timeline, MapNotice, QrNotice, ConfirmQr, ConfirmOne, ConfirmExport,
+                             ConfirmGpx, ConfirmAll, FileOperation, Notice };
+    enum class SurveyFileAction { List, DeleteOne, DeleteAll, Export, Timeline, Gpx };
+    struct SurveyFileTask {
+        std::atomic_bool complete{false};
+        std::atomic_bool cancelled{false};
+        SurveyFileAction action{SurveyFileAction::List};
+        platform::SurveyFiles files;
+        platform::SurveyTimeline timeline;
+        platform::SurveyGpxExport gpx;
+        platform::EvidenceExportResult evidence;
+        std::string error;
+    };
+
+    enum class NoteStage { None, List, Edit, Viewing, ConfirmDelete, Working, Notice };
+    enum class NoteAction { List, Save, Read, Delete };
+    struct NoteTask {
+        std::atomic_bool complete{false};
+        std::atomic_bool cancelled{false};
+        NoteAction action{NoteAction::List};
+        platform::SurveyFiles files;
+        platform::FieldNote note;
+        std::string error;
+    };
+
+    enum class SettingsBackupStage { None, Confirm, Working, Notice };
+    struct SettingsBackupTask {
+        std::atomic_bool complete{false};
+        SettingsBackup result;
+    };
+
+    enum class PortStage { None, InventoryHome, InventoryHistory, InventoryRestoring, InventoryListing,
+                           InventoryLoading, InventoryDeleting, InventoryDeleteConfirm,
+                           InventoryExportConfirm, InventoryExporting,
+                           InventoryComparison, InventoryPorts, InventoryExclusions,
+                           InventoryLabel, InventoryUpdateNote, InventoryReminder, InventoryPolicy,
+                           RouterConfirm, RouterLoading,
+                           NmapChoice, NmapConfirm, NmapRunning, NmapDetails,
+                           Target, Protocol, Ports, Custom, DnsConsent,
+                           Resolving, Review, ReviewPorts, Scanning, Results, Saving, Notice };
+    enum class InventoryAction { Restore, List, Load, Delete, Export };
     struct PortTask {
         platform::PortScanProgress progress;
         std::atomic_bool complete{false};
         platform::PortTargets targets;
         platform::PortScanResult result;
         platform::PortReportResult report;
+        platform::NetworkInventory inventory;
+        platform::InventoryHistory history;
+        platform::InventoryBaseline baseline;
+        platform::NmapResult nmap;
+        platform::RouterClients router_clients;
+        platform::EvidenceExportResult evidence;
+        InventoryAction inventory_action{InventoryAction::List};
+        bool inventory_select_baseline{false};
+        bool inventory_deleted{false};
+        std::string inventory_file_error;
     };
 
     struct IrTask {
@@ -795,6 +1073,18 @@ private:
                                              : view::widgets::ToastTone::Warning);
     }
 
+    void show_ir_receiver_check() {
+        const auto status = platform::inspect_ir_receiver();
+        if (status.available) {
+            toast_->show("IR receiver ready\n" + status.device_path +
+                             "\nNo signal was captured or sent",
+                         view::widgets::ToastTone::Default, 4200);
+        } else {
+            toast_->show("IR receiver unavailable\n" + status.error,
+                         view::widgets::ToastTone::Warning, 4200);
+        }
+    }
+
     void update_ir() {
         const auto task = ir_task_;
         if (!task) return;
@@ -847,15 +1137,127 @@ private:
         if (!notice.empty()) {
             port_return_stage_ = port_stage_;
             port_stage_ = PortStage::Notice;
-            port_notice_ = notice;
+            port_notice_ = file_display_text(notice, 512);
             port_notice_page_ = 0;
         }
         std::string text;
         switch (port_stage_) {
+            case PortStage::InventoryHome:
+                text = "Host discovery\n1 New scan  2 History\n";
+                text += inventory_baseline_name_.empty() ? "No baseline selected" : "Baseline selected";
+                text += "\nESC close";
+                break;
+            case PortStage::InventoryPorts:
+                text = "Discovery TCP ports\n1 Default 22,80,443,445\n2 Custom (up to 8)\nESC returns";
+                break;
+            case PortStage::RouterConfirm:
+                text = "Import local router CSV?\n~/poseidon-reports/\nrouter-clients.csv\nENTER import  ESC cancel";
+                break;
+            case PortStage::RouterLoading:
+                text = "Reading router export...";
+                break;
+            case PortStage::InventoryExclusions: {
+                const auto shown = inventory_exclusions_.size() > 35
+                    ? "..." + inventory_exclusions_.substr(inventory_exclusions_.size() - 35)
+                    : inventory_exclusions_;
+                text = "Exclude IPs (comma-separated)\n" + shown +
+                       "\nENTER review  ESC returns";
+                break;
+            }
+            case PortStage::InventoryLabel:
+            case PortStage::InventoryUpdateNote:
+            case PortStage::InventoryReminder: {
+                const auto shown = inventory_edit_buffer_.size() > 35
+                    ? "..." + inventory_edit_buffer_.substr(inventory_edit_buffer_.size() - 35)
+                    : inventory_edit_buffer_;
+                text = (port_stage_ == PortStage::InventoryLabel ? "User label\n" :
+                        port_stage_ == PortStage::InventoryUpdateNote ? "Manual update note\n" :
+                        "Reminder date YYYY-MM-DD\n") + shown + "\nENTER apply  ESC cancel";
+                break;
+            }
+            case PortStage::InventoryPolicy: {
+                const auto shown = inventory_policy_text_.size() > 35
+                    ? "..." + inventory_policy_text_.substr(inventory_policy_text_.size() - 35)
+                    : inventory_policy_text_;
+                text = "Restricted TCP ports (max 32)\n" + shown +
+                       "\nENTER review  ESC returns";
+                break;
+            }
+            case PortStage::InventoryHistory:
+                if (inventory_history_.empty()) {
+                    text = "No discovery reports\nESC returns";
+                } else {
+                    const auto& name = inventory_history_[inventory_history_selection_];
+                    text = "History " + std::to_string(inventory_history_selection_ + 1) + "/" +
+                           std::to_string(inventory_history_.size()) + "\n" +
+                           name.substr(std::string("poseidon-host-discovery-").size()) +
+                           "\nLEFT/RIGHT ENTER view\nB baseline  D delete  X export";
+                }
+                break;
+            case PortStage::InventoryListing:
+            case PortStage::InventoryRestoring:
+            case PortStage::InventoryLoading:
+            case PortStage::InventoryDeleting:
+            case PortStage::InventoryExporting:
+                text = "Working with reports...";
+                break;
+            case PortStage::InventoryDeleteConfirm:
+                text = "Delete selected report?\nThis cannot be undone.\nENTER delete  ESC cancel";
+                break;
+            case PortStage::InventoryExportConfirm:
+                text = "Copy selected report?\nExport contains sensitive data.\n"
+                       "ENTER copy + SHA-256  ESC";
+                break;
+            case PortStage::InventoryComparison: {
+                const auto comparison = platform::compare_network_inventories(
+                    inventory_baseline_, inventory_result_);
+                if (!comparison.comparable) {
+                    text = "Cannot compare: scan targets\nor ports differ.\nESC returns";
+                } else {
+                    text = (inventory_baseline_.scan.cancelled || inventory_result_.scan.cancelled ||
+                            !inventory_baseline_.scan.error.empty() || !inventory_result_.scan.error.empty() ||
+                            inventory_baseline_.scan.truncated || inventory_result_.scan.truncated ||
+                            inventory_baseline_.scan.completed != inventory_baseline_.scan.total ||
+                            inventory_result_.scan.completed != inventory_result_.scan.total
+                                ? "Partial comparison\n" : "Compared to baseline\n");
+                    text += "New responses: " +
+                        std::to_string(comparison.newly_responding) +
+                        "  not seen: " + std::to_string(comparison.not_seen) +
+                        "\nMAC differences: " + std::to_string(comparison.mac_changed) +
+                        "\nNewly observed open: " + std::to_string(comparison.newly_open_ports) +
+                        "  svc diff: " + std::to_string(comparison.service_changes) +
+                        "\nD details  ESC returns";
+                }
+                break;
+            }
+            case PortStage::NmapChoice:
+                text = "Nmap inspection\n1 Services  2 Services + OS\nOS uses raw packets/privilege\nESC returns";
+                break;
+            case PortStage::NmapConfirm:
+                text = "Inspect authorized host?\n" +
+                       inventory_result_.hosts[port_selection_ - 1].address +
+                       "\nTCP " + platform::format_port_list(inventory_result_.scan.ports) +
+                       (nmap_os_ ? "\nPlus OS fingerprint packets" : "\nService probes send data") +
+                       "\nENTER confirm  ESC cancel";
+                break;
+            case PortStage::NmapRunning:
+                text = "Nmap inspecting host...\nESC cancels";
+                break;
+            case PortStage::NmapDetails: {
+                constexpr std::size_t width = 90;
+                const auto pages = std::max<std::size_t>(1, (nmap_detail_.size() + width - 1) / width);
+                text = inventory_detail_title_ + " " + std::to_string(nmap_detail_page_ + 1) + "/" +
+                       std::to_string(pages) + "\n" +
+                       nmap_detail_.substr(nmap_detail_page_ * width, width) +
+                       "\nLEFT/RIGHT  ESC returns";
+                break;
+            }
             case PortStage::Target: {
                 const auto shown = port_target_.size() > 35
                     ? "..." + port_target_.substr(port_target_.size() - 35) : port_target_;
-                text += "Target IP, CIDR or hostname\n" + shown + "\nENTER next  ESC close";
+                text += (inventory_mode_ ? "Discovery IP or CIDR (max 256)\n" :
+                                          "Target IP, CIDR or hostname\n") +
+                        shown + "\nENTER next  ESC close";
                 break;
             }
             case PortStage::Protocol:
@@ -877,6 +1279,15 @@ private:
                 text += "Resolving target...\nESC cancels";
                 break;
             case PortStage::Review:
+                if (inventory_mode_) {
+                    text += "Target " + std::to_string(port_selection_ + 1) + "/" +
+                        std::to_string(port_targets_.addresses.size()) + "\n" +
+                        port_targets_.addresses[port_selection_] +
+                        "\nTCP " + std::to_string(port_ports_.size()) + " ports  " +
+                        std::to_string(port_targets_.addresses.size() * port_ports_.size()) +
+                        " probes\nLEFT/RIGHT targets  P ports\nENTER: authorized scan";
+                    break;
+                }
                 text += "Target " + std::to_string(port_selection_ + 1) + "/" +
                     std::to_string(port_targets_.addresses.size()) + "\n" +
                     port_targets_.addresses[port_selection_] + "\n" +
@@ -903,7 +1314,48 @@ private:
                 text += "Saving report...";
                 break;
             case PortStage::Results:
-                if (port_selection_ == 0) {
+                if (inventory_mode_) {
+                    if (port_selection_ == 0) {
+                        text += !port_result_.error.empty() ? "Failed/partial (E details)" :
+                                port_result_.cancelled ? "Cancelled (partial)" : "Discovery complete";
+                        const auto responding = std::count_if(
+                            inventory_result_.hosts.begin(), inventory_result_.hosts.end(),
+                            [](const platform::InventoryHost& host) { return host.responded; });
+                        const auto imported = std::count_if(
+                            inventory_result_.hosts.begin(), inventory_result_.hosts.end(),
+                            [](const platform::InventoryHost& host) { return !host.responded && host.router_listed; });
+                        text += "\nResponding: " + std::to_string(responding) +
+                                "  router only: " + std::to_string(imported);
+                        if (port_result_.truncated) text += "\nResults truncated";
+                        text += "\nM map  T router";
+                        if (!inventory_result_.arp_warning.empty()) text += "  A ARP";
+                        if (!inventory_baseline_name_.empty()) text += "  B compare";
+                        const auto today = platform::inventory_local_date();
+                        const auto reminders = std::count_if(
+                            inventory_result_.hosts.begin(), inventory_result_.hosts.end(),
+                            [&](const platform::InventoryHost& host) {
+                                return !host.update_due.empty() && !today.empty() && host.update_due <= today;
+                            });
+                        const bool has_reminders = std::any_of(
+                            inventory_result_.hosts.begin(), inventory_result_.hosts.end(),
+                            [](const platform::InventoryHost& host) { return !host.update_due.empty(); });
+                        if (has_reminders) text += today.empty() ? "\nReminder clock unavailable" :
+                                                    "\nReminders due: " + std::to_string(reminders);
+                    } else {
+                        const auto& host = inventory_result_.hosts[port_selection_ - 1];
+                        text += std::string(host.responded ? "Responding " :
+                                            host.router_listed ? "Router only " : "No current evidence ") +
+                                std::to_string(port_selection_) + "/" +
+                                std::to_string(inventory_result_.hosts.size()) + "\n" +
+                                host.address + "\nCached MAC: " +
+                                (host.cached_mac.empty() ? "unknown" : host.cached_mac) +
+                                "\nTCP open: " +
+                                (host.open_ports.empty() ? "none observed" :
+                                 platform::format_port_list(host.open_ports));
+                        text += "\nI inspect V info Y policy\nL label U note R due G tips";
+                    }
+                    text += "\nLEFT/RIGHT  S save  H history";
+                } else if (port_selection_ == 0) {
                     text += !port_result_.error.empty() ? "Scan failed (E details)" :
                             port_result_.cancelled ? "Cancelled (partial)" : "Scan complete";
                     text += "\nOpen " + std::to_string(port_result_.open) +
@@ -920,7 +1372,7 @@ private:
                         (entry.protocol == platform::PortProtocol::Tcp ? "TCP " : "UDP ") +
                         std::to_string(entry.port) + "  " + platform::port_state_name(entry.state);
                 }
-                text += "\nLEFT/RIGHT browse  S save  ESC";
+                if (!inventory_mode_) text += "\nLEFT/RIGHT browse  S save  ESC";
                 break;
             case PortStage::Notice: {
                 constexpr std::size_t width = 90;
@@ -936,12 +1388,206 @@ private:
         toast_->show_persistent(text);
     }
 
-    void start_port_scan() {
+    void start_port_scan(bool inventory = false) {
         if (port_task_) return;
-        port_stage_ = PortStage::Target;
+        if (inventory && USE_DESKTOP) {
+            toast_->show("Host discovery requires a supported device",
+                         view::widgets::ToastTone::Warning, 3200);
+            return;
+        }
+        inventory_mode_ = inventory;
+        port_stage_ = inventory ? PortStage::InventoryHome : PortStage::Target;
         port_target_.clear();
         port_spec_.clear();
         port_result_ = {};
+        inventory_result_ = {};
+        if (inventory) {
+            inventory_baseline_name_.clear();
+            inventory_baseline_ = {};
+            start_inventory_file_action(InventoryAction::Restore);
+        } else {
+            show_port_prompt();
+        }
+    }
+
+    void start_inventory_file_action(InventoryAction action, bool select_baseline = false) {
+        const char* home = std::getenv("HOME");
+#if defined(_WIN32)
+        if (!home || !*home) home = std::getenv("USERPROFILE");
+#endif
+        if (!home || !*home) {
+            show_port_prompt("Home folder unavailable");
+            return;
+        }
+        auto task = std::make_shared<PortTask>();
+        task->inventory_action = action;
+        task->inventory_select_baseline = select_baseline;
+        const auto name = action == InventoryAction::List || action == InventoryAction::Restore ? std::string{} :
+                          inventory_history_[inventory_history_selection_];
+        port_task_ = task;
+        port_stage_ = action == InventoryAction::Restore ? PortStage::InventoryRestoring :
+                      action == InventoryAction::List ? PortStage::InventoryListing :
+                      action == InventoryAction::Load ? PortStage::InventoryLoading :
+                      action == InventoryAction::Export ? PortStage::InventoryExporting :
+                                                        PortStage::InventoryDeleting;
+        show_port_prompt();
+        try {
+            port_thread_ = std::thread([task, name,
+                                        directory = std::filesystem::u8path(home) / "poseidon-reports",
+                                        destination = std::filesystem::u8path(home) / "poseidon-evidence"] {
+                try {
+                    if (task->inventory_action == InventoryAction::Restore)
+                        task->baseline = platform::load_inventory_baseline(directory);
+                    else if (task->inventory_action == InventoryAction::List)
+                        task->history = platform::list_network_inventories(directory);
+                    else if (task->inventory_action == InventoryAction::Load) {
+                        task->inventory = platform::load_network_inventory(directory, name);
+                        if (task->inventory_select_baseline && task->inventory.scan.error.empty() &&
+                            !task->inventory.scan.targets.empty())
+                            task->inventory_file_error = platform::save_inventory_baseline(directory, name);
+                    } else if (task->inventory_action == InventoryAction::Export)
+                        task->evidence = platform::export_evidence(
+                            directory, name, destination, platform::EvidenceSource::Inventory);
+                    else {
+                        task->inventory_file_error = platform::delete_network_inventory(directory, name);
+                        task->inventory_deleted = task->inventory_file_error.empty();
+                        if (task->inventory_deleted)
+                            task->inventory_file_error = platform::clear_inventory_baseline(directory, name);
+                    }
+                } catch (const std::exception& error) {
+                    task->inventory_file_error = std::string("Report operation failed: ") + error.what();
+                }
+                task->complete = true;
+            });
+        } catch (const std::system_error& error) {
+            port_task_.reset();
+            port_stage_ = action == InventoryAction::Restore ? PortStage::InventoryHome : PortStage::InventoryHistory;
+            show_port_prompt("Cannot start report task: " + error.code().message());
+        }
+    }
+
+    void start_nmap_inspection() {
+        const auto host = inventory_result_.hosts[port_selection_ - 1].address;
+        const auto ports = inventory_result_.scan.ports;
+        auto task = std::make_shared<PortTask>();
+        port_task_ = task;
+        port_stage_ = PortStage::NmapRunning;
+        show_port_prompt();
+        try {
+            port_thread_ = std::thread([task, host, ports, os = nmap_os_] {
+                try {
+                    task->nmap = platform::run_nmap_inspection(host, ports, os,
+                                                               task->progress.cancelled);
+                } catch (const std::exception& error) {
+                    task->nmap.error = std::string("Nmap inspection failed: ") + error.what();
+                }
+                task->complete = true;
+            });
+        } catch (const std::system_error& error) {
+            port_task_.reset();
+            port_stage_ = PortStage::NmapConfirm;
+            show_port_prompt("Cannot start Nmap: " + error.code().message());
+        }
+    }
+
+    void start_router_import() {
+        const char* home = std::getenv("HOME");
+#if defined(_WIN32)
+        if (!home || !*home) home = std::getenv("USERPROFILE");
+#endif
+        if (!home || !*home) { show_port_prompt("Home folder unavailable"); return; }
+        auto task = std::make_shared<PortTask>();
+        port_task_ = task;
+        port_stage_ = PortStage::RouterLoading;
+        show_port_prompt();
+        try {
+            port_thread_ = std::thread([task, directory = std::filesystem::u8path(home) / "poseidon-reports"] {
+                try {
+                    task->router_clients = platform::load_router_clients(directory);
+                } catch (const std::exception& error) {
+                    task->router_clients.error = std::string("Router import failed: ") + error.what();
+                }
+                task->complete = true;
+            });
+        } catch (const std::system_error& error) {
+            port_task_.reset();
+            port_stage_ = PortStage::RouterConfirm;
+            show_port_prompt("Cannot start import: " + error.code().message());
+        }
+    }
+
+    void show_nmap_details() {
+        const auto& host = inventory_result_.hosts[port_selection_ - 1];
+        inventory_detail_title_ = "Nmap evidence";
+        nmap_detail_ = "Service/OS results are estimates, not patch status. ";
+        if (!host.responded) nmap_detail_ += "Not observed responding in discovery scan. ";
+        if (!host.label.empty()) nmap_detail_ += "Label: " + file_display_text(host.label, 80) + ". ";
+        if (!host.update_note.empty())
+            nmap_detail_ += "Update note: " + file_display_text(host.update_note, 80) + ". ";
+        if (!host.update_due.empty()) {
+            const auto today = platform::inventory_local_date();
+            nmap_detail_ += "Reminder: " + host.update_due +
+                (today.empty() ? " (clock unavailable). " :
+                 host.update_due <= today ? " (due). " : " (upcoming). ");
+        }
+        if (!host.router_name.empty() || !host.router_mac.empty())
+            nmap_detail_ += "Imported router record (unverified): " +
+                            file_display_text(host.router_name, 80) + " " + host.router_mac + ". ";
+        if (platform::inventory_mac_conflict(host))
+            nmap_detail_ += "Warning: router and cached MAC differ. ";
+        if (host.services.empty()) nmap_detail_ += "No service details recorded. ";
+        for (const auto& service : host.services) {
+            nmap_detail_ += "TCP " + std::to_string(service.port) + " " +
+                            file_display_text(service.service, 80) + " " +
+                            file_display_text(service.version, 80) + ". ";
+        }
+        nmap_detail_ += host.os_guess.empty() ? "OS unknown." :
+                        "OS guess: " + file_display_text(host.os_guess, 80);
+        nmap_detail_page_ = 0;
+        port_stage_ = PortStage::NmapDetails;
+        show_port_prompt();
+    }
+
+    void show_inventory_map() {
+        inventory_detail_title_ = "Observation map";
+        nmap_detail_ = "[This scanner]\n? Network path unknown\n";
+        if (inventory_result_.hosts.empty()) nmap_detail_ += "No responses observed.";
+        for (const auto& host : inventory_result_.hosts)
+            nmap_detail_ += "? " + host.address +
+                            (host.responded ? "\n" : " (not observed)\n");
+        nmap_detail_ += "Physical links are unknown.";
+        nmap_detail_page_ = 0;
+        port_stage_ = PortStage::NmapDetails;
+        show_port_prompt();
+    }
+
+    void show_inventory_policy(const std::vector<uint16_t>& restricted_ports) {
+        const auto& host = inventory_result_.hosts[port_selection_ - 1];
+        const auto review = platform::review_inventory_policy(inventory_result_, host, restricted_ports);
+        inventory_detail_title_ = "TCP policy review";
+        nmap_detail_ = host.address + ". Restricted: " + platform::format_port_list(restricted_ports) +
+                       ". Observed open: " +
+                       (review.observed_open.empty() ? "none" : platform::format_port_list(review.observed_open)) +
+                       ". Not in scan plan: " +
+                       (review.not_in_scan.empty() ? "none" : platform::format_port_list(review.not_in_scan)) +
+                       ". Other ports may be filtered or unprobed. No proof of safety or internet exposure. "
+                       "No new scan performed.";
+        if (!host.responded) nmap_detail_ += " Host was not observed responding.";
+        nmap_detail_page_ = 0;
+        port_stage_ = PortStage::NmapDetails;
+        show_port_prompt();
+    }
+
+    void show_inventory_guidance() {
+        const auto& host = inventory_result_.hosts[port_selection_ - 1];
+        const auto hints = platform::inventory_port_guidance(host);
+        inventory_detail_title_ = "Offline port tips";
+        nmap_detail_ = "Ports do not identify services or vulnerabilities. ";
+        if (hints.empty()) nmap_detail_ += "No tips for observed open ports. ";
+        for (const auto& hint : hints) nmap_detail_ += hint + " ";
+        nmap_detail_ += "Filtered or unscanned ports remain unknown; no new scan was performed.";
+        nmap_detail_page_ = 0;
+        port_stage_ = PortStage::NmapDetails;
         show_port_prompt();
     }
 
@@ -973,11 +1619,20 @@ private:
         show_port_prompt();
         try {
             port_thread_ = std::thread([task, targets = port_targets_, ports = port_ports_,
-                                        tcp = port_tcp_, udp = port_udp_] {
+                                        tcp = port_tcp_, udp = port_udp_, inventory = inventory_mode_] {
                 try {
                     task->result = platform::scan_ports(targets, ports, tcp, udp, task->progress);
+                    if (inventory)
+                        task->inventory = platform::make_network_inventory(
+                            task->result, platform::arp_entries());
                 } catch (const std::exception& error) {
                     task->result.error = std::string("Scan failed: ") + error.what();
+                    if (inventory) {
+                        task->result.targets = targets.addresses;
+                        task->result.ports = ports;
+                        task->result.tcp = tcp;
+                        task->inventory.scan = task->result;
+                    }
                 }
                 task->complete = true;
             });
@@ -997,15 +1652,19 @@ private:
             show_port_prompt("Home folder unavailable");
             return;
         }
+        if (inventory_mode_ && !inventory_baseline_name_.empty()) update_inventory_comparison();
         auto task = std::make_shared<PortTask>();
         port_task_ = task;
         port_stage_ = PortStage::Saving;
         show_port_prompt();
         try {
-            port_thread_ = std::thread([task, result = port_result_,
+            port_thread_ = std::thread([task, result = port_result_, inventory = inventory_result_,
+                                        inventory_mode = inventory_mode_,
                                         directory = std::filesystem::u8path(home) / "poseidon-reports"] {
                 try {
-                    task->report = platform::save_port_report(directory, result);
+                    task->report = inventory_mode
+                        ? platform::save_network_inventory(directory, inventory)
+                        : platform::save_port_report(directory, result);
                 } catch (const std::exception& error) {
                     task->report.error = std::string("Save failed: ") + error.what();
                 }
@@ -1016,6 +1675,23 @@ private:
             port_stage_ = PortStage::Results;
             show_port_prompt("Cannot start save: " + error.code().message());
         }
+    }
+
+    void update_inventory_comparison() {
+        const auto comparison = platform::compare_network_inventories(inventory_baseline_, inventory_result_);
+        const bool partial = inventory_baseline_.scan.cancelled || inventory_result_.scan.cancelled ||
+            !inventory_baseline_.scan.error.empty() || !inventory_result_.scan.error.empty() ||
+            inventory_baseline_.scan.truncated || inventory_result_.scan.truncated ||
+            inventory_baseline_.scan.completed != inventory_baseline_.scan.total ||
+            inventory_result_.scan.completed != inventory_result_.scan.total;
+        inventory_result_.comparison_baseline = inventory_baseline_name_;
+        inventory_result_.comparison_note = comparison.comparable
+            ? (partial ? "Partial: new " : "New ") + std::to_string(comparison.newly_responding) +
+              ", not seen " + std::to_string(comparison.not_seen) +
+              ", MAC " + std::to_string(comparison.mac_changed) +
+              ", TCP " + std::to_string(comparison.newly_open_ports) +
+              ", service " + std::to_string(comparison.service_changes)
+            : "Baseline targets or ports differ; no comparison";
     }
 
     void update_port_scan() {
@@ -1031,7 +1707,96 @@ private:
         }
         if (port_thread_.joinable()) port_thread_.join();
         port_task_.reset();
-        if (port_stage_ == PortStage::Resolving) {
+        if (port_stage_ == PortStage::RouterLoading) {
+            port_stage_ = PortStage::Results;
+            if (!task->router_clients.error.empty()) show_port_prompt(task->router_clients.error);
+            else {
+                const auto imported = platform::add_router_evidence(inventory_result_, task->router_clients);
+                if (!imported.error.empty()) show_port_prompt(imported.error);
+                else {
+                    port_selection_ = 0;
+                    show_port_prompt("Router records: " + std::to_string(imported.matched) +
+                        " matched, " + std::to_string(imported.imported_only) +
+                        " not observed, " + std::to_string(imported.retained_without_record) +
+                        " retained without current record. Records may be stale. Press S to save.");
+                }
+            }
+        } else if (port_stage_ == PortStage::NmapRunning) {
+            port_stage_ = PortStage::Results;
+            if (task->nmap.cancelled) show_port_prompt("Nmap inspection cancelled");
+            else if (!task->nmap.error.empty()) show_port_prompt(task->nmap.error);
+            else {
+                auto& host = inventory_result_.hosts[port_selection_ - 1];
+                host.services = std::move(task->nmap.services);
+                host.os_guess = std::move(task->nmap.os_guess);
+                show_nmap_details();
+                if (!task->nmap.warning.empty()) show_port_prompt(task->nmap.warning);
+            }
+        } else if (port_stage_ == PortStage::InventoryRestoring) {
+            port_stage_ = PortStage::InventoryHome;
+            if (!task->inventory_file_error.empty()) show_port_prompt(task->inventory_file_error);
+            else if (!task->baseline.error.empty()) show_port_prompt(task->baseline.error);
+            else {
+                inventory_baseline_name_ = std::move(task->baseline.name);
+                inventory_baseline_ = std::move(task->baseline.inventory);
+                show_port_prompt();
+            }
+        } else if (port_stage_ == PortStage::InventoryListing) {
+            port_stage_ = PortStage::InventoryHistory;
+            if (!task->inventory_file_error.empty()) show_port_prompt(task->inventory_file_error);
+            else if (!task->history.error.empty()) show_port_prompt(task->history.error);
+            else {
+                inventory_history_ = std::move(task->history.names);
+                inventory_history_selection_ = 0;
+                if (task->history.truncated)
+                    show_port_prompt("More than 256 reports; showing a subset. Delete reports to see the rest.");
+                else show_port_prompt();
+            }
+        } else if (port_stage_ == PortStage::InventoryLoading) {
+            port_stage_ = PortStage::InventoryHistory;
+            if (!task->inventory_file_error.empty()) show_port_prompt(task->inventory_file_error);
+            else if (task->inventory.scan.targets.empty())
+                show_port_prompt(task->inventory.scan.error.empty() ?
+                                 "Invalid discovery report" : task->inventory.scan.error);
+            else if (task->inventory_select_baseline) {
+                inventory_baseline_ = std::move(task->inventory);
+                inventory_baseline_name_ = inventory_history_[inventory_history_selection_];
+                port_stage_ = PortStage::InventoryHome;
+                show_port_prompt("Baseline saved");
+            } else {
+                inventory_result_ = std::move(task->inventory);
+                port_result_ = inventory_result_.scan;
+                port_selection_ = 0;
+                port_stage_ = PortStage::Results;
+                show_port_prompt("Saved report, not a live scan");
+            }
+        } else if (port_stage_ == PortStage::InventoryDeleting) {
+            port_stage_ = PortStage::InventoryHistory;
+            if (task->inventory_deleted &&
+                inventory_baseline_name_ == inventory_history_[inventory_history_selection_]) {
+                inventory_baseline_name_.clear();
+                inventory_baseline_ = {};
+            }
+            if (!task->inventory_file_error.empty()) {
+                if (task->inventory_deleted) {
+                    inventory_history_.erase(inventory_history_.begin() + inventory_history_selection_);
+                    if (inventory_history_selection_ >= inventory_history_.size() && inventory_history_selection_ > 0)
+                        --inventory_history_selection_;
+                    show_port_prompt("Report deleted; baseline cleanup: " + task->inventory_file_error);
+                } else {
+                    show_port_prompt(task->inventory_file_error);
+                }
+            }
+            else {
+                start_inventory_file_action(InventoryAction::List);
+            }
+        } else if (port_stage_ == PortStage::InventoryExporting) {
+            port_stage_ = PortStage::InventoryHistory;
+            if (!task->inventory_file_error.empty()) show_port_prompt(task->inventory_file_error);
+            else if (!task->evidence.error.empty()) show_port_prompt(task->evidence.error);
+            else show_port_prompt("Evidence copy and SHA-256 manifest saved in ~/poseidon-evidence. " +
+                                  task->evidence.manifest_path.filename().u8string());
+        } else if (port_stage_ == PortStage::Resolving) {
             if (task->progress.cancelled) {
                 port_stage_ = PortStage::Target;
                 show_port_prompt("Resolution cancelled");
@@ -1046,9 +1811,21 @@ private:
             }
         } else if (port_stage_ == PortStage::Scanning) {
             port_result_ = std::move(task->result);
+            if (inventory_mode_) inventory_result_ = std::move(task->inventory);
             port_selection_ = 0;
             port_stage_ = PortStage::Results;
-            show_port_prompt();
+            if (inventory_mode_ && !inventory_baseline_name_.empty()) {
+                update_inventory_comparison();
+                const auto changes = platform::compare_network_inventories(
+                    inventory_baseline_, inventory_result_);
+                const bool changed = changes.newly_responding || changes.not_seen ||
+                    changes.mac_changed || changes.newly_open_ports || changes.service_changes;
+                show_port_prompt(std::string(changes.comparable && changed ? "Change alert: " : "") +
+                                 inventory_result_.comparison_note +
+                                 ". Not seen is unknown.");
+            } else {
+                show_port_prompt();
+            }
         } else if (port_stage_ == PortStage::Saving) {
             port_stage_ = PortStage::Results;
             show_port_prompt(task->report.error.empty()
@@ -1072,6 +1849,185 @@ private:
             }
             return true;
         }
+        if (port_stage_ == PortStage::InventoryRestoring || port_stage_ == PortStage::InventoryListing || port_stage_ == PortStage::InventoryLoading ||
+            port_stage_ == PortStage::InventoryDeleting || port_stage_ == PortStage::InventoryExporting ||
+            port_stage_ == PortStage::RouterLoading) return true;
+        if (port_stage_ == PortStage::RouterConfirm) {
+            if (key == LV_KEY_ENTER) start_router_import();
+            else if (key == LV_KEY_ESC) { port_stage_ = PortStage::Results; show_port_prompt(); }
+            return true;
+        }
+        if (port_stage_ == PortStage::InventoryHome) {
+            if (key == LV_KEY_ESC) { port_stage_ = PortStage::None; toast_->hide(); }
+            else if (key == '1' || key == LV_KEY_ENTER) {
+                port_stage_ = PortStage::Target;
+                port_target_.clear();
+                show_port_prompt();
+            } else if (key == '2' || key == 'h' || key == 'H')
+                start_inventory_file_action(InventoryAction::List);
+            return true;
+        }
+        if (port_stage_ == PortStage::InventoryPorts) {
+            if (key == LV_KEY_ESC) { port_stage_ = PortStage::Target; show_port_prompt(); }
+            else if (key == '1' || key == LV_KEY_ENTER) {
+                port_ports_ = {22, 80, 443, 445};
+                port_spec_ = platform::format_port_list(port_ports_);
+                inventory_exclusions_.clear();
+                port_stage_ = PortStage::InventoryExclusions;
+                show_port_prompt();
+            } else if (key == '2') {
+                port_spec_.clear();
+                port_stage_ = PortStage::Custom;
+                show_port_prompt();
+            }
+            return true;
+        }
+        if (port_stage_ == PortStage::InventoryExclusions) {
+            if (key == LV_KEY_ESC) { port_stage_ = PortStage::InventoryPorts; show_port_prompt(); }
+            else if (key == LV_KEY_BACKSPACE || key == LV_KEY_DEL) {
+                if (!inventory_exclusions_.empty()) inventory_exclusions_.pop_back();
+                show_port_prompt();
+            } else if (key == LV_KEY_ENTER) {
+                const auto selected = platform::exclude_inventory_targets(
+                    platform::numeric_port_targets(port_target_), inventory_exclusions_);
+                if (!selected.error.empty()) show_port_prompt(selected.error);
+                else {
+                    port_targets_ = selected;
+                    port_selection_ = 0;
+                    port_stage_ = PortStage::Review;
+                    show_port_prompt();
+                }
+            } else if (key >= 32 && key <= 126 && inventory_exclusions_.size() < 253) {
+                inventory_exclusions_.push_back(static_cast<char>(key));
+                show_port_prompt();
+            }
+            return true;
+        }
+        if (port_stage_ == PortStage::InventoryLabel || port_stage_ == PortStage::InventoryUpdateNote ||
+            port_stage_ == PortStage::InventoryReminder) {
+            if (key == LV_KEY_ESC) { port_stage_ = PortStage::Results; show_port_prompt(); }
+            else if (key == LV_KEY_ENTER) {
+                auto& host = inventory_result_.hosts[port_selection_ - 1];
+                if (port_stage_ == PortStage::InventoryReminder && !inventory_edit_buffer_.empty() &&
+                    !platform::valid_inventory_date(inventory_edit_buffer_)) {
+                    show_port_prompt("Use a valid YYYY-MM-DD date, or clear it");
+                    return true;
+                }
+                if (port_stage_ == PortStage::InventoryPolicy) {
+                    if (key == LV_KEY_ESC) {
+                        port_stage_ = PortStage::Results;
+                        show_port_prompt();
+                    } else if (key == LV_KEY_BACKSPACE || key == LV_KEY_DEL) {
+                        if (!inventory_policy_text_.empty()) inventory_policy_text_.pop_back();
+                        show_port_prompt();
+                    } else if (key == LV_KEY_ENTER) {
+                        const auto parsed = platform::parse_port_list(inventory_policy_text_);
+                        if (!parsed.error.empty()) show_port_prompt(parsed.error);
+                        else if (parsed.ports.size() > 32) show_port_prompt("Policy supports at most 32 ports");
+                        else show_inventory_policy(parsed.ports);
+                    } else if (((key >= '0' && key <= '9') || key == ',' || key == '-') &&
+                               inventory_policy_text_.size() < 80) {
+                        inventory_policy_text_.push_back(static_cast<char>(key));
+                        show_port_prompt();
+                    }
+                    return true;
+                }
+                if (port_stage_ == PortStage::InventoryLabel) host.label = inventory_edit_buffer_;
+                else if (port_stage_ == PortStage::InventoryUpdateNote) host.update_note = inventory_edit_buffer_;
+                else host.update_due = inventory_edit_buffer_;
+                port_stage_ = PortStage::Results;
+                show_port_prompt("Applied. Press S to save a report.");
+            } else if (key == LV_KEY_BACKSPACE || key == LV_KEY_DEL) {
+                if (!inventory_edit_buffer_.empty()) inventory_edit_buffer_.pop_back();
+                show_port_prompt();
+            } else if (key >= 32 && key <= 126 && inventory_edit_buffer_.size() < 64) {
+                inventory_edit_buffer_.push_back(static_cast<char>(key));
+                show_port_prompt();
+            }
+            return true;
+        }
+        if (port_stage_ == PortStage::InventoryHistory) {
+            if (key == LV_KEY_ESC) { port_stage_ = PortStage::InventoryHome; show_port_prompt(); }
+            else if ((key == LV_KEY_LEFT || key == 'z') && inventory_history_selection_ > 0) {
+                --inventory_history_selection_;
+                show_port_prompt();
+            } else if ((key == LV_KEY_RIGHT || key == 'c') &&
+                       inventory_history_selection_ + 1 < inventory_history_.size()) {
+                ++inventory_history_selection_;
+                show_port_prompt();
+            } else if (!inventory_history_.empty() && key == LV_KEY_ENTER)
+                start_inventory_file_action(InventoryAction::Load);
+            else if (!inventory_history_.empty() && (key == 'b' || key == 'B'))
+                start_inventory_file_action(InventoryAction::Load, true);
+            else if (!inventory_history_.empty() && (key == 'd' || key == 'D')) {
+                port_stage_ = PortStage::InventoryDeleteConfirm;
+                show_port_prompt();
+            } else if (!inventory_history_.empty() && (key == 'x' || key == 'X')) {
+                port_stage_ = PortStage::InventoryExportConfirm;
+                show_port_prompt();
+            }
+            return true;
+        }
+        if (port_stage_ == PortStage::InventoryDeleteConfirm) {
+            if (key == LV_KEY_ENTER) start_inventory_file_action(InventoryAction::Delete);
+            else if (key == LV_KEY_ESC) { port_stage_ = PortStage::InventoryHistory; show_port_prompt(); }
+            return true;
+        }
+        if (port_stage_ == PortStage::InventoryExportConfirm) {
+            if (key == LV_KEY_ENTER) start_inventory_file_action(InventoryAction::Export);
+            else if (key == LV_KEY_ESC) { port_stage_ = PortStage::InventoryHistory; show_port_prompt(); }
+            return true;
+        }
+        if (port_stage_ == PortStage::InventoryComparison) {
+            if (key == LV_KEY_ESC || key == LV_KEY_ENTER) {
+                port_stage_ = PortStage::Results;
+                show_port_prompt();
+            } else if (key == 'd' || key == 'D') {
+                const auto comparison = platform::compare_network_inventories(
+                    inventory_baseline_, inventory_result_);
+                if (!comparison.comparable) return true;
+                inventory_detail_title_ = "Observed changes";
+                nmap_detail_.clear();
+                for (const auto& line : comparison.details)
+                    nmap_detail_ += file_display_text(line, 120) + "\n";
+                if (comparison.details.empty()) nmap_detail_ = "No differences observed.";
+                if (comparison.details_truncated) nmap_detail_ += "Further details omitted.";
+                nmap_detail_page_ = 0;
+                port_stage_ = PortStage::NmapDetails;
+                show_port_prompt();
+            }
+            return true;
+        }
+        if (port_stage_ == PortStage::NmapRunning) {
+            if (key == LV_KEY_ESC) port_task_->progress.cancelled = true;
+            return true;
+        }
+        if (port_stage_ == PortStage::NmapChoice) {
+            if (key == LV_KEY_ESC) { port_stage_ = PortStage::Results; show_port_prompt(); }
+            else if (key == '1' || key == '2') {
+                nmap_os_ = key == '2';
+                port_stage_ = PortStage::NmapConfirm;
+                show_port_prompt();
+            }
+            return true;
+        }
+        if (port_stage_ == PortStage::NmapConfirm) {
+            if (key == LV_KEY_ENTER) start_nmap_inspection();
+            else if (key == LV_KEY_ESC) { port_stage_ = PortStage::NmapChoice; show_port_prompt(); }
+            return true;
+        }
+        if (port_stage_ == PortStage::NmapDetails) {
+            const auto pages = std::max<std::size_t>(1, (nmap_detail_.size() + 89) / 90);
+            if (key == LV_KEY_ESC || key == LV_KEY_ENTER) {
+                port_stage_ = PortStage::Results;
+                show_port_prompt();
+            } else if ((key == LV_KEY_LEFT || key == 'z') && nmap_detail_page_ > 0) {
+                --nmap_detail_page_; show_port_prompt();
+            } else if ((key == LV_KEY_RIGHT || key == 'c') && nmap_detail_page_ + 1 < pages) {
+                ++nmap_detail_page_; show_port_prompt();
+            }
+            return true;
+        }
         if (port_stage_ == PortStage::Resolving || port_stage_ == PortStage::Scanning) {
             if (key == LV_KEY_ESC) port_task_->progress.cancelled = true;
             return true;
@@ -1084,8 +2040,8 @@ private:
             return true;
         }
         if (key == LV_KEY_ESC) {
-            port_stage_ = PortStage::None;
-            toast_->hide();
+            if (inventory_mode_) { port_stage_ = PortStage::InventoryHome; show_port_prompt(); }
+            else { port_stage_ = PortStage::None; toast_->hide(); }
             return true;
         }
         if (port_stage_ == PortStage::Target || port_stage_ == PortStage::Custom) {
@@ -1097,14 +2053,32 @@ private:
             } else if (key == LV_KEY_ENTER) {
                 if (port_stage_ == PortStage::Target) {
                     if (input.empty()) show_port_prompt("Enter a target");
+                    else if (inventory_mode_) {
+                        port_targets_ = platform::numeric_port_targets(input);
+                        if (!port_targets_.error.empty()) {
+                            show_port_prompt(port_targets_.error);
+                        } else {
+                            port_tcp_ = true;
+                            port_udp_ = false;
+                            port_stage_ = PortStage::InventoryPorts;
+                            show_port_prompt();
+                        }
+                    }
                     else { port_stage_ = PortStage::Protocol; show_port_prompt(); }
                 } else {
                     auto parsed = platform::parse_port_list(input);
                     if (!parsed.error.empty()) show_port_prompt(parsed.error);
+                    else if (inventory_mode_ && parsed.ports.size() > 8)
+                        show_port_prompt("Discovery supports at most 8 ports");
                     else {
                         port_ports_ = std::move(parsed.ports);
                         port_spec_ = platform::format_port_list(port_ports_);
-                        port_stage_ = PortStage::DnsConsent;
+                        if (inventory_mode_) {
+                            inventory_exclusions_.clear();
+                            port_stage_ = PortStage::InventoryExclusions;
+                        } else {
+                            port_stage_ = PortStage::DnsConsent;
+                        }
                         show_port_prompt();
                     }
                 }
@@ -1135,7 +2109,8 @@ private:
                    port_stage_ == PortStage::Results) {
             const std::size_t count = port_stage_ == PortStage::Review
                 ? port_targets_.addresses.size() : port_stage_ == PortStage::ReviewPorts
-                ? (port_spec_.size() + 31) / 32 : port_result_.entries.size() + 1;
+                ? (port_spec_.size() + 31) / 32 : inventory_mode_
+                ? inventory_result_.hosts.size() + 1 : port_result_.entries.size() + 1;
             if ((key == LV_KEY_LEFT || key == 'z') && port_selection_ > 0) {
                 --port_selection_;
                 show_port_prompt();
@@ -1150,20 +2125,2047 @@ private:
                 show_port_prompt();
             } else if (port_stage_ == PortStage::Results && (key == 's' || key == 'S')) {
                 save_port_scan();
+            } else if (port_stage_ == PortStage::Results && inventory_mode_ &&
+                       (key == 'h' || key == 'H')) {
+                start_inventory_file_action(InventoryAction::List);
+            } else if (port_stage_ == PortStage::Results && inventory_mode_ &&
+                       port_selection_ > 0 && (key == 'i' || key == 'I')) {
+                port_stage_ = PortStage::NmapChoice;
+                show_port_prompt();
+            } else if (port_stage_ == PortStage::Results && inventory_mode_ &&
+                       port_selection_ > 0 && (key == 'v' || key == 'V')) {
+                show_nmap_details();
+            } else if (port_stage_ == PortStage::Results && inventory_mode_ &&
+                       port_selection_ > 0 && (key == 'y' || key == 'Y')) {
+                port_stage_ = PortStage::InventoryPolicy;
+                show_port_prompt();
+            } else if (port_stage_ == PortStage::Results && inventory_mode_ &&
+                       port_selection_ > 0 && (key == 'g' || key == 'G')) {
+                show_inventory_guidance();
+            } else if (port_stage_ == PortStage::Results && inventory_mode_ &&
+                       port_selection_ > 0 && (key == 'l' || key == 'L' || key == 'u' || key == 'U' ||
+                                               key == 'r' || key == 'R')) {
+                const auto& host = inventory_result_.hosts[port_selection_ - 1];
+                const bool label = key == 'l' || key == 'L';
+                const bool reminder = key == 'r' || key == 'R';
+                inventory_edit_buffer_ = label ? host.label : reminder ? host.update_due : host.update_note;
+                port_stage_ = label ? PortStage::InventoryLabel : reminder
+                    ? PortStage::InventoryReminder : PortStage::InventoryUpdateNote;
+                show_port_prompt();
+            } else if (port_stage_ == PortStage::Results && inventory_mode_ &&
+                       (key == 'm' || key == 'M')) {
+                show_inventory_map();
+            } else if (port_stage_ == PortStage::Results && inventory_mode_ &&
+                       (key == 't' || key == 'T')) {
+                port_stage_ = PortStage::RouterConfirm;
+                show_port_prompt();
+            } else if (port_stage_ == PortStage::Results && inventory_mode_ &&
+                       !inventory_baseline_name_.empty() && (key == 'b' || key == 'B')) {
+                port_stage_ = PortStage::InventoryComparison;
+                show_port_prompt();
             } else if (port_stage_ == PortStage::Results && (key == 'e' || key == 'E') &&
                        !port_result_.error.empty()) {
                 show_port_prompt(port_result_.error);
+            } else if (port_stage_ == PortStage::Results && inventory_mode_ &&
+                       (key == 'a' || key == 'A') && !inventory_result_.arp_warning.empty()) {
+                show_port_prompt(inventory_result_.arp_warning);
             }
         }
         return true;
     }
 
-    void start_wifi_scan() {
-        if (wifi_task_) {
+    void start_ap_signal_test() {
+        ap_signal_test_active_ = true;
+        ap_signal_samples_.clear();
+        show_ap_signal_test();
+    }
+
+    void show_lab_listener() {
+        std::string text;
+        if (lab_listener_stage_ == LabListenerStage::Address) {
+            text = "Lab listener IPv4:\n" + lab_listener_address_ +
+                   "\nPrivate local IP; TCP 8088\nENTER review  ESC cancel";
+        } else if (lab_listener_stage_ == LabListenerStage::Confirm) {
+            text = "Bind " + lab_listener_address_ + ":8088\n"
+                   "Ensure lab is isolated.\nNot isolated automatically!\n"
+                   "ENTER start  ESC cancel";
+        } else if (lab_listener_) {
+            const auto status = lab_listener_->status();
+            if (lab_export_task_) {
+                text = lab_export_task_->deleting ? "Deleting log..." : "Copying log and hashing...";
+            } else if (lab_delete_confirm_) {
+                text = "Delete original log?\nExports are not deleted.\nENTER delete  ESC cancel";
+            } else if (lab_export_confirm_) {
+                text = "Copy lab log?\nContains peer IP addresses.\n"
+                       "ENTER copy + SHA-256  ESC";
+            } else if (!lab_listener_notice_.empty()) {
+                text = lab_listener_notice_ + "\nENTER/ESC back";
+            } else if (lab_listener_log_info_) {
+                text = "Lab listener log\n" + status.file_name +
+                       "\n~/poseidon-lab\nL back  ESC " +
+                       (status.complete ? "close" : "stop");
+            } else if (!status.error.empty()) {
+                text = "Lab listener error\n" + status.error +
+                       (status.file_name.empty() || lab_log_deleted_ ? "\nESC close" :
+                        "\nL log  X export  D delete\nESC close");
+            } else if (status.complete) {
+                text = "Listener stopped\nConnections: " + std::to_string(status.connections) +
+                       (lab_log_deleted_ ? "\nLog deleted  ESC close" :
+                        status.file_name.empty() ? "\nNo log created\nESC close" :
+                        "\nL log  X export  D delete\nESC close");
+            } else if (lab_listener_stop_requested_) {
+                text = "Stopping listener...";
+            } else if (status.listening) {
+                text = "Listening " + lab_listener_address_ + ":8088\nConnections: " +
+                       std::to_string(status.connections) +
+                       (status.last_peer.empty() ? "" : "\nLast: " + status.last_peer) +
+                       "\n5 min/100 max  ESC stop";
+            } else {
+                text = "Starting lab listener...\nESC stop";
+            }
+        }
+        if (text != lab_listener_display_) {
+            lab_listener_display_ = text;
+            toast_->show_persistent(text);
+        }
+    }
+
+    void update_lab_listener() {
+        if (lab_listener_stage_ != LabListenerStage::Running) return;
+        if (lab_export_task_ && lab_export_task_->complete) {
+            if (lab_export_thread_.joinable()) lab_export_thread_.join();
+            const bool deleting = lab_export_task_->deleting;
+            const auto result = std::move(lab_export_task_->result);
+            lab_export_task_.reset();
+            if (deleting && result.error.empty()) lab_log_deleted_ = true;
+            lab_listener_notice_ = result.error.empty()
+                ? (deleting ? "Log deleted\nExports remain" :
+                              "Copy + SHA-256 saved\n~/poseidon-evidence")
+                : (deleting ? "Delete failed\n" : "Export failed\n") + result.error;
+        }
+        show_lab_listener();
+    }
+
+    void start_security_log_action(const char* directory, const std::string& filename,
+                                   platform::EvidenceSource source, bool deleting,
+                                   std::string& notice) {
+        const char* home = std::getenv("HOME");
+        if (!home || !*home || !std::filesystem::u8path(home).is_absolute()) {
+            notice = "Home folder unavailable";
+            return;
+        }
+        auto task = std::make_shared<LabExportTask>();
+        task->deleting = deleting;
+        const auto root = std::filesystem::u8path(home);
+        const auto source_directory = root / directory;
+        lab_export_task_ = task;
+        try {
+            lab_export_thread_ = std::thread([task, root, source_directory, filename, source] {
+                try {
+                    if (task->deleting) {
+                        task->result.error = platform::delete_security_log(
+                            source_directory, filename, source);
+                    } else {
+                        task->result = platform::export_evidence(
+                            source_directory, filename, root / "poseidon-evidence", source);
+                    }
+                } catch (const std::exception& failure) {
+                    task->result.error = failure.what();
+                }
+                task->complete = true;
+            });
+        } catch (const std::system_error& failure) {
+            lab_export_task_.reset();
+            notice = "Cannot start log operation: " + failure.code().message();
+        }
+    }
+
+    bool handle_lab_listener_key(uint32_t key, bool long_pressed) {
+        if (long_pressed) return true;
+        if (lab_listener_stage_ == LabListenerStage::Running) {
+            const auto status = lab_listener_->status();
+            if (lab_export_task_) return true;
+            if (lab_delete_confirm_) {
+                if (key == LV_KEY_ENTER) {
+                    lab_delete_confirm_ = false;
+                    start_security_log_action("poseidon-lab", status.file_name,
+                                              platform::EvidenceSource::LabListener, true,
+                                              lab_listener_notice_);
+                } else if (key == LV_KEY_ESC || key == LV_KEY_BACKSPACE) {
+                    lab_delete_confirm_ = false;
+                }
+                show_lab_listener();
+            } else if (lab_export_confirm_) {
+                if (key == LV_KEY_ENTER) {
+                    lab_export_confirm_ = false;
+                    start_security_log_action("poseidon-lab", status.file_name,
+                                              platform::EvidenceSource::LabListener, false,
+                                              lab_listener_notice_);
+                } else if (key == LV_KEY_ESC || key == LV_KEY_BACKSPACE) {
+                    lab_export_confirm_ = false;
+                }
+                show_lab_listener();
+            } else if (!lab_listener_notice_.empty()) {
+                if (key == LV_KEY_ENTER || key == LV_KEY_ESC || key == LV_KEY_BACKSPACE) {
+                    lab_listener_notice_.clear();
+                    show_lab_listener();
+                }
+            } else if ((key == 'd' || key == 'D') && status.complete &&
+                       !status.file_name.empty() && !lab_log_deleted_) {
+                lab_listener_log_info_ = false;
+                lab_delete_confirm_ = true;
+                show_lab_listener();
+            } else if ((key == 'x' || key == 'X') && status.complete &&
+                       !status.file_name.empty() && !lab_log_deleted_) {
+                lab_listener_log_info_ = false;
+                lab_export_confirm_ = true;
+                show_lab_listener();
+            } else if ((key == 'l' || key == 'L') && !status.file_name.empty() &&
+                       !lab_log_deleted_) {
+                lab_listener_log_info_ = !lab_listener_log_info_;
+                show_lab_listener();
+            } else if (key == LV_KEY_ESC || key == LV_KEY_BACKSPACE) {
+                if (!status.complete) {
+                    lab_listener_->stop();
+                    lab_listener_stop_requested_ = true;
+                    show_lab_listener();
+                } else {
+                    lab_listener_.reset();
+                    lab_listener_stage_ = LabListenerStage::None;
+                    lab_listener_display_.clear();
+                    toast_->hide();
+                }
+            }
+            return true;
+        }
+        if (key == LV_KEY_ESC) {
+            lab_listener_stage_ = LabListenerStage::None;
+            lab_listener_display_.clear();
+            toast_->hide();
+        } else if (lab_listener_stage_ == LabListenerStage::Confirm) {
+            if (key == LV_KEY_ENTER) {
+                const char* home = std::getenv("HOME");
+                if (!home || !*home || !std::filesystem::u8path(home).is_absolute()) {
+                    lab_listener_stage_ = LabListenerStage::None;
+                    toast_->show("Home folder unavailable", view::widgets::ToastTone::Error, 4000);
+                    return true;
+                }
+                std::string error;
+                lab_listener_ = platform::LabHoneypot::start(
+                    lab_listener_address_, std::filesystem::u8path(home) / "poseidon-lab", error);
+                if (!lab_listener_) {
+                    lab_listener_stage_ = LabListenerStage::None;
+                    toast_->show(error, view::widgets::ToastTone::Error, 4000);
+                    return true;
+                }
+                lab_listener_stage_ = LabListenerStage::Running;
+                lab_listener_stop_requested_ = false;
+                lab_listener_log_info_ = false;
+                lab_export_confirm_ = false;
+                lab_delete_confirm_ = false;
+                lab_log_deleted_ = false;
+                lab_listener_notice_.clear();
+                show_lab_listener();
+            }
+        } else if (key == LV_KEY_BACKSPACE || key == LV_KEY_DEL) {
+            if (!lab_listener_address_.empty()) lab_listener_address_.pop_back();
+            show_lab_listener();
+        } else if (key == LV_KEY_ENTER) {
+            if (!platform::valid_lab_honeypot_address(lab_listener_address_)) {
+                toast_->show("Enter a private or\nloopback IPv4 address",
+                             view::widgets::ToastTone::Warning, 3000);
+                lab_listener_display_.clear();
+            } else {
+                lab_listener_stage_ = LabListenerStage::Confirm;
+                show_lab_listener();
+            }
+        } else if (((key >= '0' && key <= '9') || key == '.') &&
+                   lab_listener_address_.size() < 15) {
+            lab_listener_address_ += static_cast<char>(key);
+            show_lab_listener();
+        }
+        return true;
+    }
+
+    void show_wireless_event_monitor() {
+        std::string text;
+        const bool probe = wireless_event_kind_ == platform::WirelessEventKind::ProbeRequest;
+        if (wireless_event_stage_ == WirelessEventStage::Interface) {
+            text = "Interface or esp32:\n" + wireless_event_interface_ +
+                   (wireless_event_setup_error_.empty()
+                        ? "\nRadiotap, or configured ESP32"
+                        : "\n" + wireless_event_setup_error_) +
+                   "\nENTER review  ESC cancel";
+        } else if (wireless_event_stage_ == WirelessEventStage::Channel) {
+            text = "ESP32 2.4 GHz channel 1-11\n" +
+                   (wireless_event_channel_text_.empty() ? std::string("Default: 1") : wireless_event_channel_text_) +
+                   (wireless_event_setup_error_.empty() ? "" : "\n" + wireless_event_setup_error_) +
+                   "\nH hop 1/6/11  ENTER next\nESC back";
+        } else if (wireless_event_stage_ == WirelessEventStage::Confirm) {
+            text = std::string(probe ? "Count probe headers\n" : "Receive deauth headers\n") +
+                   wireless_event_interface_ +
+                   (wireless_event_interface_ == "esp32"
+                        ? (wireless_event_channel_ == 0 ? "\nESP32: hop 1/6/11, no TX."
+                            : "\nESP32: 2.4 GHz ch " + std::to_string(wireless_event_channel_) + ", no TX.")
+                        : "\nNo channel changes or TX.") +
+                   "\nENTER start  ESC cancel";
+        } else if (wireless_event_monitor_) {
+            const auto status = wireless_event_monitor_->status();
+            if (lab_export_task_) {
+                text = lab_export_task_->deleting ? "Deleting log..." : "Copying log and hashing...";
+            } else if (wireless_event_delete_confirm_) {
+                text = "Delete original log?\nExports are not deleted.\nENTER delete  ESC cancel";
+            } else if (wireless_event_export_confirm_) {
+                text = probe ? "Copy probe log?\nContains event times.\nENTER copy + SHA-256  ESC"
+                             : "Copy deauth log?\nContains AP identifiers.\nENTER copy + SHA-256  ESC";
+            } else if (!wireless_event_notice_.empty()) {
+                text = wireless_event_notice_ + "\nENTER/ESC back";
+            } else if (wireless_event_log_info_) {
+                text = std::string(probe ? "Probe log\n" : "Deauth log\n") + status.file_name +
+                       "\n~/poseidon-wireless-monitor\nL back  ESC " +
+                       (status.complete ? "close" : "stop");
+            } else if (!status.error.empty()) {
+                text = "Wireless monitor error\n" + status.error +
+                       (status.file_name.empty() || wireless_event_log_deleted_ ? "\nESC close" :
+                        "\nL log  X export  D delete\nESC close");
+            } else if (status.complete) {
+                text = "Monitor stopped\nEvents: " + std::to_string(status.events) +
+                       (wireless_event_log_deleted_ ? "\nLog deleted  ESC close" :
+                        status.file_name.empty() ? "\nNo log created\nESC close" :
+                        "\nL log  X export  D delete\nESC close");
+            } else if (wireless_event_stop_requested_) {
+                text = "Stopping monitor...";
+            } else if (status.listening) {
+                text = std::string(probe ? "Probe requests: " : "Deauth events: ") +
+                       std::to_string(status.events) +
+                       (status.last_bssid.empty() ? "" : "\nAP: " + status.last_bssid) +
+                       "\nUnverified; incomplete\n5 min/1000 max  ESC stop";
+            } else {
+                text = "Starting monitor...\nESC stop";
+            }
+        }
+        if (text != wireless_event_display_) {
+            wireless_event_display_ = text;
+            toast_->show_persistent(text);
+        }
+    }
+
+    void update_wireless_event_monitor() {
+        if (wireless_event_stage_ != WirelessEventStage::Running) return;
+        if (lab_export_task_ && lab_export_task_->complete) {
+            if (lab_export_thread_.joinable()) lab_export_thread_.join();
+            const bool deleting = lab_export_task_->deleting;
+            const auto result = std::move(lab_export_task_->result);
+            lab_export_task_.reset();
+            if (deleting && result.error.empty()) wireless_event_log_deleted_ = true;
+            wireless_event_notice_ = result.error.empty()
+                ? (deleting ? "Log deleted\nExports remain" :
+                              "Copy + SHA-256 saved\n~/poseidon-evidence")
+                : (deleting ? "Delete failed\n" : "Export failed\n") + result.error;
+        }
+        show_wireless_event_monitor();
+    }
+
+    bool handle_wireless_event_key(uint32_t key, bool long_pressed) {
+        if (long_pressed) return true;
+        if (wireless_event_stage_ == WirelessEventStage::Interface) {
+            if (key == LV_KEY_ESC) {
+                wireless_event_stage_ = WirelessEventStage::None;
+                wireless_event_display_.clear();
+                toast_->hide();
+            } else if (key == LV_KEY_BACKSPACE || key == LV_KEY_DEL) {
+                if (!wireless_event_interface_.empty()) wireless_event_interface_.pop_back();
+                wireless_event_setup_error_.clear();
+                show_wireless_event_monitor();
+            } else if (key == LV_KEY_ENTER) {
+                if (!platform::valid_monitor_interface_name(wireless_event_interface_)) {
+                    wireless_event_setup_error_ = "Invalid interface name";
+                } else {
+                    wireless_event_setup_error_.clear();
+                    wireless_event_stage_ = wireless_event_interface_ == "esp32"
+                        ? WirelessEventStage::Channel : WirelessEventStage::Confirm;
+                    wireless_event_channel_ = 1;
+                    wireless_event_channel_text_.clear();
+                }
+                show_wireless_event_monitor();
+            } else if (((key >= 'a' && key <= 'z') || (key >= 'A' && key <= 'Z') ||
+                        (key >= '0' && key <= '9') || key == '_' || key == '-' || key == '.') &&
+                       wireless_event_interface_.size() < 15) {
+                wireless_event_interface_ += static_cast<char>(key);
+                wireless_event_setup_error_.clear();
+                show_wireless_event_monitor();
+            }
+            return true;
+        }
+        if (wireless_event_stage_ == WirelessEventStage::Channel) {
+            if (key == LV_KEY_ESC) {
+                wireless_event_stage_ = WirelessEventStage::Interface;
+                wireless_event_setup_error_.clear();
+            } else if (key == LV_KEY_BACKSPACE || key == LV_KEY_DEL) {
+                if (!wireless_event_channel_text_.empty()) wireless_event_channel_text_.pop_back();
+                wireless_event_setup_error_.clear();
+            } else if (key == 'h' || key == 'H') {
+                wireless_event_channel_ = 0;
+                wireless_event_stage_ = WirelessEventStage::Confirm;
+            } else if (key == LV_KEY_ENTER) {
+                unsigned value = 1;
+                const auto& input = wireless_event_channel_text_;
+                if (!input.empty()) {
+                    const auto parsed = std::from_chars(input.data(), input.data() + input.size(), value);
+                    if (parsed.ec != std::errc{} || parsed.ptr != input.data() + input.size()) value = 0;
+                }
+                if (value < 1 || value > 11) wireless_event_setup_error_ = "Use channels 1-11";
+                else {
+                    wireless_event_channel_ = value;
+                    wireless_event_stage_ = WirelessEventStage::Confirm;
+                    wireless_event_setup_error_.clear();
+                }
+            } else if (key >= '0' && key <= '9' && wireless_event_channel_text_.size() < 2) {
+                wireless_event_channel_text_ += static_cast<char>(key);
+                wireless_event_setup_error_.clear();
+            }
+            show_wireless_event_monitor();
+            return true;
+        }
+        if (wireless_event_stage_ == WirelessEventStage::Confirm) {
+            if (key == LV_KEY_ESC || key == LV_KEY_BACKSPACE) {
+                wireless_event_stage_ = wireless_event_interface_ == "esp32"
+                    ? WirelessEventStage::Channel : WirelessEventStage::Interface;
+                show_wireless_event_monitor();
+            } else if (key == LV_KEY_ENTER) {
+                const char* home = std::getenv("HOME");
+                if (!home || !*home || !std::filesystem::u8path(home).is_absolute()) {
+                    wireless_event_stage_ = WirelessEventStage::None;
+                    toast_->show("Home folder unavailable", view::widgets::ToastTone::Error, 4000);
+                    return true;
+                }
+                std::string error;
+                wireless_event_monitor_ = platform::WirelessEventMonitor::start(
+                    wireless_event_interface_, std::filesystem::u8path(home) / "poseidon-wireless-monitor",
+                    wireless_event_kind_, error, wireless_event_channel_);
+                if (!wireless_event_monitor_) {
+                    wireless_event_stage_ = WirelessEventStage::None;
+                    toast_->show(error, view::widgets::ToastTone::Error, 4000);
+                    return true;
+                }
+                wireless_event_stage_ = WirelessEventStage::Running;
+                wireless_event_stop_requested_ = false;
+                wireless_event_log_info_ = false;
+                wireless_event_export_confirm_ = false;
+                wireless_event_delete_confirm_ = false;
+                wireless_event_log_deleted_ = false;
+                wireless_event_notice_.clear();
+                show_wireless_event_monitor();
+            }
+            return true;
+        }
+        const auto status = wireless_event_monitor_->status();
+        if (lab_export_task_) return true;
+        if (wireless_event_delete_confirm_) {
+            if (key == LV_KEY_ENTER) {
+                wireless_event_delete_confirm_ = false;
+                start_security_log_action("poseidon-wireless-monitor", status.file_name,
+                    wireless_event_kind_ == platform::WirelessEventKind::ProbeRequest
+                        ? platform::EvidenceSource::ProbeMonitor
+                        : platform::EvidenceSource::DeauthMonitor,
+                    true, wireless_event_notice_);
+            } else if (key == LV_KEY_ESC || key == LV_KEY_BACKSPACE) {
+                wireless_event_delete_confirm_ = false;
+            }
+            show_wireless_event_monitor();
+        } else if (wireless_event_export_confirm_) {
+            if (key == LV_KEY_ENTER) {
+                wireless_event_export_confirm_ = false;
+                start_security_log_action("poseidon-wireless-monitor", status.file_name,
+                                          wireless_event_kind_ == platform::WirelessEventKind::ProbeRequest
+                                              ? platform::EvidenceSource::ProbeMonitor
+                                              : platform::EvidenceSource::DeauthMonitor,
+                                          false, wireless_event_notice_);
+            } else if (key == LV_KEY_ESC || key == LV_KEY_BACKSPACE) {
+                wireless_event_export_confirm_ = false;
+            }
+            show_wireless_event_monitor();
+        } else if (!wireless_event_notice_.empty()) {
+            if (key == LV_KEY_ENTER || key == LV_KEY_ESC || key == LV_KEY_BACKSPACE) {
+                wireless_event_notice_.clear();
+                show_wireless_event_monitor();
+            }
+        } else if ((key == 'd' || key == 'D') && status.complete && !status.file_name.empty() &&
+                   !wireless_event_log_deleted_) {
+            wireless_event_log_info_ = false;
+            wireless_event_delete_confirm_ = true;
+            show_wireless_event_monitor();
+        } else if ((key == 'x' || key == 'X') && status.complete && !status.file_name.empty() &&
+                   !wireless_event_log_deleted_) {
+            wireless_event_log_info_ = false;
+            wireless_event_export_confirm_ = true;
+            show_wireless_event_monitor();
+        } else if ((key == 'l' || key == 'L') && !status.file_name.empty() &&
+                   !wireless_event_log_deleted_) {
+            wireless_event_log_info_ = !wireless_event_log_info_;
+            show_wireless_event_monitor();
+        } else if (key == LV_KEY_ESC || key == LV_KEY_BACKSPACE) {
+            if (!status.complete) {
+                wireless_event_monitor_->stop();
+                wireless_event_stop_requested_ = true;
+                show_wireless_event_monitor();
+            } else {
+                wireless_event_monitor_.reset();
+                wireless_event_stage_ = WirelessEventStage::None;
+                wireless_event_display_.clear();
+                toast_->hide();
+            }
+        }
+        return true;
+    }
+
+    void show_adsb_receiver() {
+        if (adsb_receiver_confirm_) {
+            toast_->show_persistent(std::string("ADS-B 1090 MHz: check bias\n") +
+                (adsb_receiver_record_ ? "L LOG ON " : "L LOG OFF ") +
+                (adsb_receiver_gps_ ? "G GPS ON\n" : "G GPS OFF\n") +
+                "LOG: aircraft IDs/position\nGPS: your location\nENTER start  ESC cancel");
+            return;
+        }
+        if (!adsb_receiver_) return;
+        const auto status = adsb_receiver_->status();
+        std::string text;
+        if (!status.error.empty()) text = "ADS-B error\n" + file_display_text(status.error, 100);
+        else if (status.complete) text = "ADS-B stopped";
+        else if (adsb_receiver_stopping_) text = "Stopping ADS-B receiver...";
+        else if (!status.running) text = "Starting ADS-B receiver...";
+        else if (status.valid_frames == 0) text = "Running; no valid frames yet";
+        else if (adsb_aircraft_view_) {
+            const auto& recent = status.recent_aircraft;
+            auto selected = std::find_if(recent.begin(), recent.end(), [&](const auto& frame) {
+                return frame.aircraft_address == adsb_aircraft_selected_;
+            });
+            if (selected == recent.end()) {
+                selected = recent.begin();
+                adsb_aircraft_selected_ = selected->aircraft_address;
+            }
+            const auto& frame = *selected;
+            text = "Recent aircraft " + std::to_string(selected - recent.begin() + 1) +
+                   "/" + std::to_string(recent.size()) +
+                   "\n" + frame.aircraft_address + "  TC " + std::to_string(frame.type_code) +
+                   adsb_frame_details(frame);
+            text += "\nLast frame; unverified\nZ/C select  A live\nESC stop";
+            if (text != adsb_receiver_display_) {
+                adsb_receiver_display_ = text;
+                toast_->show_persistent(text);
+            }
+            return;
+        }
+        else {
+            text = "ADS-B " + status.latest.aircraft_address +
+                   "  TC " + std::to_string(status.latest.type_code) +
+                   adsb_frame_details(status.latest);
+        }
+        text += "\nValid: " + std::to_string(status.valid_frames) +
+                "  Rejected: " + std::to_string(status.rejected_frames) +
+                (status.gps_status.empty() ? "" : "\n" + status.gps_status) +
+                (status.log_filename.empty() ? "" : "\nLog saved: " + status.log_filename) +
+                "\nUnverified  A aircraft\nESC " + (status.complete ? "close" : "stop");
+        if (text != adsb_receiver_display_) {
+            adsb_receiver_display_ = text;
+            toast_->show_persistent(text);
+        }
+    }
+
+    void update_adsb_receiver() {
+        if (adsb_receiver_active_ && !adsb_receiver_confirm_) show_adsb_receiver();
+    }
+
+    bool handle_adsb_receiver_key(uint32_t key, bool long_pressed) {
+        if (long_pressed) return true;
+        if (adsb_receiver_confirm_) {
+            if (key == LV_KEY_ESC || key == LV_KEY_BACKSPACE) {
+                adsb_receiver_active_ = false;
+                adsb_receiver_confirm_ = false;
+                toast_->hide();
+            } else if (key == LV_KEY_ENTER) {
+                std::string error;
+                std::filesystem::path log_home;
+                std::string gps_device;
+                if (adsb_receiver_record_) {
+                    const char* home = std::getenv("HOME");
+                    if (!home || !std::filesystem::path(home).is_absolute()) {
+                        toast_->show_persistent("Log requires absolute HOME\nESC cancel");
+                        return true;
+                    }
+                    log_home = std::filesystem::path(home);
+                }
+                if (adsb_receiver_gps_) {
+                    const char* gps = std::getenv("POSEIDON_GPS_DEVICE");
+                    if (!gps || !*gps) {
+                        toast_->show_persistent("GPS device not configured\nESC cancel");
+                        return true;
+                    }
+                    gps_device = gps;
+                }
+                adsb_receiver_ = platform::AdsbReceiver::start(error, log_home, gps_device);
+                adsb_receiver_confirm_ = false;
+                if (!adsb_receiver_) {
+                    adsb_receiver_active_ = false;
+                    toast_->show(error, view::widgets::ToastTone::Error, 5000);
+                } else {
+                    adsb_receiver_display_.clear();
+                    adsb_receiver_stopping_ = false;
+                    adsb_aircraft_view_ = false;
+                    adsb_aircraft_selected_.clear();
+                    show_adsb_receiver();
+                }
+            } else if (key == 'l' || key == 'L') {
+                adsb_receiver_record_ = !adsb_receiver_record_;
+                if (!adsb_receiver_record_) adsb_receiver_gps_ = false;
+                show_adsb_receiver();
+            } else if (key == 'g' || key == 'G') {
+                if (!adsb_receiver_record_) {
+                    toast_->show_persistent("Enable logging before GPS\nL log  ESC cancel");
+                    return true;
+                }
+                adsb_receiver_gps_ = !adsb_receiver_gps_;
+                show_adsb_receiver();
+            }
+        } else if ((key == 'a' || key == 'A') && adsb_receiver_) {
+            const auto status = adsb_receiver_->status();
+            if (status.running && !adsb_receiver_stopping_ && !status.recent_aircraft.empty()) {
+                adsb_aircraft_view_ = !adsb_aircraft_view_;
+                show_adsb_receiver();
+            }
+        } else if (adsb_aircraft_view_ && adsb_receiver_ &&
+                   (key == LV_KEY_UP || key == LV_KEY_DOWN || key == 'z' || key == 'c')) {
+            const auto status = adsb_receiver_->status();
+            const auto& recent = status.recent_aircraft;
+            if (!recent.empty()) {
+                const auto selected = std::find_if(recent.begin(), recent.end(), [&](const auto& frame) {
+                    return frame.aircraft_address == adsb_aircraft_selected_;
+                });
+                std::size_t index = selected == recent.end() ? 0 :
+                    static_cast<std::size_t>(selected - recent.begin());
+                if ((key == LV_KEY_UP || key == 'z') && index > 0) --index;
+                else if ((key == LV_KEY_DOWN || key == 'c') && index + 1 < recent.size()) ++index;
+                adsb_aircraft_selected_ = recent[index].aircraft_address;
+                show_adsb_receiver();
+            }
+        } else if ((key == LV_KEY_ESC || key == LV_KEY_BACKSPACE) && adsb_receiver_) {
+            if (adsb_receiver_->status().complete) {
+                adsb_receiver_.reset();
+                adsb_receiver_active_ = false;
+                toast_->hide();
+            } else {
+                adsb_receiver_->stop();
+                adsb_receiver_stopping_ = true;
+                toast_->show_persistent("Stopping ADS-B receiver...");
+            }
+        }
+        return true;
+    }
+
+    void show_favorites() {
+        const auto& favorites = theme_persistence_.config.favorites;
+        std::string text = "Favorites";
+        if (favorites.empty()) {
+            text += "\nNo saved favorites";
+        } else {
+            if (favorite_selection_ >= favorites.size()) favorite_selection_ = favorites.size() - 1;
+            const auto& item = favorites[favorite_selection_];
+            text += " " + std::to_string(favorite_selection_ + 1) + "/" +
+                    std::to_string(favorites.size()) + "\n" +
+                    favorite_page_name(item[0]) + ": " + item.substr(2);
+        }
+        if (!favorite_notice_.empty()) text += "\n" + favorite_notice_;
+        text += "\nS save selected  D remove\nZ/C select  ENTER go\nESC close";
+        toast_->show_persistent(text);
+    }
+
+    bool save_favorites(std::vector<std::string> favorites) {
+        auto config = theme_persistence_.config;
+        config.favorites = std::move(favorites);
+        std::string error;
+        if (!save_application_config(theme_persistence_.config_path, config, error)) {
+            LOG_WARN("failed to save favorites {}: {}", theme_persistence_.config_path, error);
+            favorite_notice_ = "Save failed: " + file_display_text(error, 55);
+            return false;
+        }
+        theme_persistence_.config = std::move(config);
+        return true;
+    }
+
+    bool handle_favorites_key(uint32_t key, bool long_pressed) {
+        if (long_pressed) return true;
+        auto favorites = theme_persistence_.config.favorites;
+        favorite_notice_.clear();
+        if (key == LV_KEY_ESC || key == LV_KEY_BACKSPACE || key == '0') {
+            favorites_active_ = false;
+            toast_->hide();
+            return true;
+        }
+        if ((key == LV_KEY_UP || key == 'z') && favorite_selection_ > 0) {
+            --favorite_selection_;
+        } else if ((key == LV_KEY_DOWN || key == 'c') &&
+                   favorite_selection_ + 1 < favorites.size()) {
+            ++favorite_selection_;
+        } else if (key == 's' || key == 'S') {
+            const auto id = favorite_id(view_model_.current_page(), view_model_.tool_selection());
+            if (id.empty()) favorite_notice_ = "Select a tool first";
+            else if (std::find(favorites.begin(), favorites.end(), id) != favorites.end())
+                favorite_notice_ = "Already saved";
+            else if (favorites.size() >= kMaxFavorites)
+                favorite_notice_ = "Favorites full";
+            else {
+                favorites.push_back(id);
+                if (save_favorites(favorites)) {
+                    favorite_selection_ = favorites.size() - 1;
+                    favorite_notice_ = "Saved";
+                }
+            }
+        } else if ((key == 'd' || key == 'D') && !favorites.empty()) {
+            favorites.erase(favorites.begin() + favorite_selection_);
+            if (save_favorites(favorites)) {
+                if (favorite_selection_ >= favorites.size() && favorite_selection_ > 0)
+                    --favorite_selection_;
+                favorite_notice_ = "Removed";
+            }
+        } else if (key == LV_KEY_ENTER && !favorites.empty()) {
+            const auto& id = favorites[favorite_selection_];
+            const auto page = static_cast<model::AppPage>(id[0] - '0');
+            int32_t index = 0;
+            for (; index < model::tool_item_count(page); ++index) {
+                if (favorite_id(page, index) == id) break;
+            }
+            if (index == model::tool_item_count(page)) {
+                favorite_notice_ = "Tool no longer available";
+            } else {
+                favorites_active_ = false;
+                toast_->hide();
+                switch (page) {
+                    case model::AppPage::Butter: view_model_.show_butter_page(); break;
+                    case model::AppPage::Network: view_model_.show_network_page(); break;
+                    case model::AppPage::Wireless: view_model_.show_wireless_page(); break;
+                    case model::AppPage::Infrared: view_model_.show_infrared_page(); break;
+                    case model::AppPage::Expansion: view_model_.show_expansion_page(); break;
+                    case model::AppPage::Tools: view_model_.show_tools_page(); break;
+                    case model::AppPage::Media: view_model_.show_media_page(); break;
+                    default: break;
+                }
+                view_model_.set_tool_selection(index);
+                return true;
+            }
+        }
+        show_favorites();
+        return true;
+    }
+
+    void show_readiness() {
+        if (accessory_profiles_active_) {
+            const auto& profile = kAccessoryProfiles[accessory_profile_selection_];
+            const bool saved = (theme_persistence_.config.accessory_profiles &
+                                (uint32_t{1} << accessory_profile_selection_)) != 0;
+            std::string text = "Accessory " + std::to_string(accessory_profile_selection_ + 1) +
+                               "/" + std::to_string(kAccessoryProfiles.size()) +
+                               (saved ? " SAVED\n" : " not saved\n") +
+                               profile.name + "\n" + profile.guidance +
+                               "\nNo detection or setup";
+            if (!accessory_profile_notice_.empty()) text += "\n" + accessory_profile_notice_;
+            text += "\nS toggle Z/C browse\nESC back";
+            toast_->show_persistent(text);
+        } else if (readiness_task_) {
+            toast_->show_persistent("Hardware readiness\nChecking local status...\nESC close");
+        } else if (!readiness_error_.empty()) {
+            toast_->show_persistent("Readiness failed\n" + readiness_error_ +
+                                    "\nR retry P profiles ESC");
+        } else {
+            toast_->show_persistent("Hardware readiness " + std::to_string(readiness_page_ + 1) +
+                "/4\n" + readiness_report_.pages[readiness_page_] +
+                "\nZ/C page R refresh\nP profiles ESC close");
+        }
+    }
+
+    void start_readiness() {
+        readiness_active_ = true;
+        if (readiness_task_) {
+            show_readiness();
+            return;
+        }
+        const char* home = std::getenv("HOME");
+#if defined(_WIN32)
+        if (!home || !*home) home = std::getenv("USERPROFILE");
+#endif
+        const char* gps = std::getenv("POSEIDON_GPS_DEVICE");
+        const char* esp = std::getenv("POSEIDON_ESP32_MONITOR_DEVICE");
+        auto task = std::make_shared<ReadinessTask>();
+        readiness_task_ = task;
+        readiness_error_.clear();
+        show_readiness();
+        try {
+            readiness_thread_ = std::thread([task, home_path = std::string(home ? home : ""),
+                                             gps_path = std::string(gps ? gps : ""),
+                                             esp_path = std::string(esp ? esp : "")] {
+                try {
+                    task->report = platform::read_device_readiness(
+                        std::filesystem::u8path(home_path), gps_path, esp_path);
+                } catch (const std::exception& error) {
+                    task->error = error.what();
+                    if (task->error.empty()) task->error = "Unknown readiness error";
+                }
+                task->complete = true;
+            });
+        } catch (const std::system_error& error) {
+            readiness_task_.reset();
+            readiness_error_ = "Cannot start: " + error.code().message();
+            show_readiness();
+        }
+    }
+
+    void update_readiness() {
+        if (!readiness_task_ || !readiness_task_->complete) return;
+        if (readiness_thread_.joinable()) readiness_thread_.join();
+        readiness_report_ = std::move(readiness_task_->report);
+        readiness_error_ = std::move(readiness_task_->error);
+        readiness_task_.reset();
+        if (readiness_active_) show_readiness();
+    }
+
+    bool handle_readiness_key(uint32_t key, bool long_pressed) {
+        if (long_pressed) return true;
+        if (accessory_profiles_active_) {
+            accessory_profile_notice_.clear();
+            if (key == LV_KEY_ESC || key == LV_KEY_BACKSPACE) {
+                accessory_profiles_active_ = false;
+            } else if ((key == LV_KEY_LEFT || key == 'z') && accessory_profile_selection_ > 0) {
+                --accessory_profile_selection_;
+            } else if ((key == LV_KEY_RIGHT || key == 'c') &&
+                       accessory_profile_selection_ + 1 < kAccessoryProfiles.size()) {
+                ++accessory_profile_selection_;
+            } else if (key == 's' || key == 'S') {
+                auto config = theme_persistence_.config;
+                config.accessory_profiles ^= uint32_t{1} << accessory_profile_selection_;
+                std::string error;
+                if (!save_application_config(theme_persistence_.config_path, config, error)) {
+                    LOG_WARN("failed to save accessory profiles {}: {}",
+                             theme_persistence_.config_path, error);
+                    accessory_profile_notice_ = "Save failed: " + file_display_text(error, 48);
+                } else {
+                    theme_persistence_.config = std::move(config);
+                    accessory_profile_notice_ = "Preference saved";
+                }
+            }
+            show_readiness();
+            return true;
+        }
+        if (key == LV_KEY_ESC || key == LV_KEY_BACKSPACE) {
+            readiness_active_ = false;
+            toast_->hide();
+        } else if (!readiness_task_ && (key == 'p' || key == 'P')) {
+            accessory_profiles_active_ = true;
+            accessory_profile_selection_ = 0;
+            accessory_profile_notice_.clear();
+            show_readiness();
+        } else if (!readiness_task_ && (key == 'r' || key == 'R')) {
+            start_readiness();
+        } else if (!readiness_task_ && readiness_error_.empty()) {
+            if ((key == LV_KEY_LEFT || key == 'z') && readiness_page_ > 0) {
+                --readiness_page_;
+                show_readiness();
+            } else if ((key == LV_KEY_RIGHT || key == 'c') && readiness_page_ < 3) {
+                ++readiness_page_;
+                show_readiness();
+            }
+        }
+        return true;
+    }
+
+    void show_incident_checklist() {
+        if (settings_backup_stage_ == SettingsBackupStage::Confirm) {
+            toast_->show_persistent("Back up app UI settings?\nNo surveys, notes or secrets\n"
+                                    "ENTER save  ESC cancel");
+            return;
+        }
+        if (settings_backup_stage_ == SettingsBackupStage::Working) {
+            toast_->show_persistent("Saving settings backup...\nPlease wait");
+            return;
+        }
+        if (settings_backup_stage_ == SettingsBackupStage::Notice) {
+            toast_->show_persistent(settings_backup_notice_ + "\nENTER/ESC back");
+            return;
+        }
+        static constexpr const char* steps[] = {
+            "1/6 Safety first\nIf harm is ongoing, isolate\nthrough your administrator.",
+            "2/6 Preserve evidence\nRecord time and timezone.\nKeep original logs unchanged.",
+            "3/6 Document scope\nNote affected devices and\nwhat you observed, not guesses.",
+            "4/6 Contain safely\nUse your router or admin tools.\nDo not retaliate or probe others.",
+            "5/6 Recover\nReview accounts and sessions.\nUpdate and verify devices.",
+            "6/6 Escalate\nContact your security team or\nauthorities where appropriate."
+        };
+        static constexpr const char* guide[] = {
+            "1/6 GPS\nA fix records your location,\nnot the transmitter location.",
+            "2/6 Wi-Fi and BLE\nDiscovery may send requests.\nNames and addresses can be faked.",
+            "3/6 Coverage\nNo match does not prove absence.\nHopping misses other channels.",
+            "4/6 ESP32-C5\nCompanion firmware: 2.4 GHz,\nchannels 1-11. Hardware unverified.",
+            "5/6 ADS-B\nPositions are broadcast reports,\nnot authenticated locations.",
+            "6/6 Privacy and law\nCheck local rules and authority.\nDeletion does not erase copies."
+        };
+        const std::string text = (field_guide_active_ ? guide : steps)[incident_checklist_page_];
+        toast_->show_persistent(text + (field_guide_active_
+            ? "\nR checklist N notes B backup\nLEFT/RIGHT ESC"
+            : "\nR guide N notes B backup\nLEFT/RIGHT ESC"));
+    }
+
+    void start_settings_backup() {
+        const char* home = std::getenv("HOME");
+        if (!home || !std::filesystem::path(home).is_absolute()) {
+            settings_backup_notice_ = "HOME is not an absolute path";
+            settings_backup_stage_ = SettingsBackupStage::Notice;
+            show_incident_checklist();
+            return;
+        }
+        auto task = std::make_shared<SettingsBackupTask>();
+        settings_backup_task_ = task;
+        settings_backup_stage_ = SettingsBackupStage::Working;
+        show_incident_checklist();
+        try {
+            settings_backup_thread_ = std::thread(
+                [task, directory = std::filesystem::path(home) / "poseidon-evidence",
+                 config = theme_persistence_.config] {
+                    try {
+                        task->result = backup_application_settings(directory, config);
+                    } catch (const std::exception& failure) {
+                        task->result.error = std::string("Settings backup: ") + failure.what();
+                    }
+                    task->complete = true;
+                });
+        } catch (const std::system_error& failure) {
+            settings_backup_task_.reset();
+            settings_backup_notice_ = "Cannot start backup: " + failure.code().message();
+            settings_backup_stage_ = SettingsBackupStage::Notice;
+            show_incident_checklist();
+        }
+    }
+
+    void update_settings_backup() {
+        if (!settings_backup_task_ || !settings_backup_task_->complete) return;
+        if (settings_backup_thread_.joinable()) settings_backup_thread_.join();
+        const auto task = settings_backup_task_;
+        settings_backup_task_.reset();
+        settings_backup_notice_ = task->result.error.empty()
+            ? "Settings saved in\n~/poseidon-evidence\n" + task->result.path.filename().u8string()
+            : task->result.error;
+        settings_backup_stage_ = SettingsBackupStage::Notice;
+        if (incident_checklist_active_) show_incident_checklist();
+    }
+
+    bool handle_incident_checklist_key(uint32_t key, bool long_pressed) {
+        if (long_pressed) return true;
+        if (settings_backup_stage_ == SettingsBackupStage::Confirm) {
+            if (key == LV_KEY_ENTER) start_settings_backup();
+            else if (key == LV_KEY_ESC || key == LV_KEY_BACKSPACE) {
+                settings_backup_stage_ = SettingsBackupStage::None;
+                show_incident_checklist();
+            }
+            return true;
+        }
+        if (settings_backup_stage_ == SettingsBackupStage::Working) return true;
+        if (settings_backup_stage_ == SettingsBackupStage::Notice) {
+            if (key == LV_KEY_ENTER || key == LV_KEY_ESC || key == LV_KEY_BACKSPACE) {
+                settings_backup_stage_ = SettingsBackupStage::None;
+                show_incident_checklist();
+            }
+            return true;
+        }
+        if (key == LV_KEY_ESC || key == LV_KEY_BACKSPACE) {
+            incident_checklist_active_ = false;
+            toast_->hide();
+        } else if (key == 'n' || key == 'N') {
+            start_field_note_action(NoteAction::List);
+        } else if (key == 'b' || key == 'B') {
+            settings_backup_stage_ = SettingsBackupStage::Confirm;
+            show_incident_checklist();
+        } else if (key == 'r' || key == 'R') {
+            field_guide_active_ = !field_guide_active_;
+            incident_checklist_page_ = 0;
+            show_incident_checklist();
+        } else if ((key == LV_KEY_LEFT || key == 'z') && incident_checklist_page_ > 0) {
+            --incident_checklist_page_;
+            show_incident_checklist();
+        } else if ((key == LV_KEY_RIGHT || key == 'c') && incident_checklist_page_ < 5) {
+            ++incident_checklist_page_;
+            show_incident_checklist();
+        }
+        return true;
+    }
+
+    void show_field_notes() {
+        std::string message;
+        switch (note_stage_) {
+            case NoteStage::List:
+                if (note_files_.empty()) message = "Field notes\nNo notes saved\nN new  ESC back";
+                else message = "Field note " + std::to_string(note_selection_ + 1) + "/" +
+                    std::to_string(note_files_.size()) + "\n" +
+                    file_display_text(note_files_[note_selection_], 28) +
+                    "\nUP/DOWN ENTER read N new\nD delete  ESC back";
+                break;
+            case NoteStage::Edit: {
+                const auto shown = note_buffer_.size() > 55
+                    ? "..." + note_buffer_.substr(note_buffer_.size() - 55) : note_buffer_;
+                message = "New note " + std::to_string(note_buffer_.size()) + "/160\n" +
+                          (shown.empty() ? "_" : shown) +
+                          "\nENTER save  ESC cancel";
+                break;
+            }
+            case NoteStage::Viewing: {
+                constexpr std::size_t width = 60;
+                const auto pages = std::max<std::size_t>(1, (note_view_.text.size() + width - 1) / width);
+                message = "Note " + std::to_string(note_page_ + 1) + "/" + std::to_string(pages) +
+                          "\n" + file_display_text(note_view_.recorded_utc, 25) + "\n" +
+                          file_display_text(note_view_.text.substr(note_page_ * width, width), width) +
+                          "\nLEFT/RIGHT page  ESC back";
+                break;
+            }
+            case NoteStage::ConfirmDelete:
+                message = "Delete selected note?\nCopies are not deleted\nENTER delete  ESC cancel";
+                break;
+            case NoteStage::Working:
+                message = "Working with field notes...\n" +
+                    std::string(note_task_ && note_task_->action == NoteAction::Read ? "ESC cancels read" : "Please wait");
+                break;
+            case NoteStage::Notice:
+                message = file_display_text(note_notice_, 120) + "\nENTER/ESC back";
+                break;
+            case NoteStage::None:
+                return;
+        }
+        toast_->show_persistent(message, note_stage_ == NoteStage::Notice
+            ? view::widgets::ToastTone::Warning : view::widgets::ToastTone::Default);
+    }
+
+    void start_field_note_action(NoteAction action) {
+        const char* home = std::getenv("HOME");
+        if (!home || !std::filesystem::path(home).is_absolute()) {
+            note_notice_ = "HOME is not an absolute path";
+            note_notice_return_ = action == NoteAction::Save ? NoteStage::Edit : NoteStage::None;
+            note_stage_ = NoteStage::Notice;
+            show_field_notes();
+            return;
+        }
+        const auto directory = std::filesystem::path(home) / "poseidon-field-notes";
+        const std::string name = action == NoteAction::Read || action == NoteAction::Delete
+            ? note_files_[note_selection_] : "";
+        auto task = std::make_shared<NoteTask>();
+        task->action = action;
+        note_task_ = task;
+        note_stage_ = NoteStage::Working;
+        show_field_notes();
+        try {
+            note_thread_ = std::thread([task, directory, name, text = note_buffer_] {
+                try {
+                    if (task->action == NoteAction::List) {
+                        task->files = platform::list_survey_files(directory);
+                        task->error = task->files.error;
+                    } else if (task->action == NoteAction::Save) {
+                        task->note = platform::save_field_note(directory, text);
+                        task->error = task->note.error;
+                    } else if (task->action == NoteAction::Read) {
+                        task->note = platform::read_field_note(directory, name, task->cancelled);
+                        task->error = task->note.error;
+                    } else {
+                        task->error = platform::delete_survey_file(directory, name);
+                    }
+                } catch (const std::exception& failure) {
+                    task->error = std::string("Field notes: ") + failure.what();
+                }
+                task->complete = true;
+            });
+        } catch (const std::system_error& failure) {
+            note_task_.reset();
+            note_notice_ = "Cannot start note action: " + failure.code().message();
+            note_notice_return_ = action == NoteAction::Save ? NoteStage::Edit : NoteStage::None;
+            note_stage_ = NoteStage::Notice;
+            show_field_notes();
+        }
+    }
+
+    void update_field_notes() {
+        if (!note_task_ || !note_task_->complete) return;
+        if (note_thread_.joinable()) note_thread_.join();
+        const auto task = note_task_;
+        note_task_.reset();
+        if (!task->error.empty() || (task->action == NoteAction::Read && task->cancelled)) {
+            note_notice_ = task->error.empty() ? "Note read cancelled" : task->error;
+            note_notice_return_ = task->action == NoteAction::Save ? NoteStage::Edit :
+                                  task->action == NoteAction::List ? NoteStage::None : NoteStage::List;
+            note_stage_ = NoteStage::Notice;
+        } else if (task->action == NoteAction::List) {
+            note_files_ = task->files.names;
+            note_selection_ = 0;
+            note_stage_ = NoteStage::List;
+        } else if (task->action == NoteAction::Read) {
+            note_view_ = task->note;
+            note_page_ = 0;
+            note_stage_ = NoteStage::Viewing;
+        } else {
+            note_notice_ = task->action == NoteAction::Save ? "Note saved" : "Note deleted; copies remain";
+            if (task->action == NoteAction::Save) note_buffer_.clear();
+            note_notice_return_ = NoteStage::List;
+            note_stage_ = NoteStage::Notice;
+        }
+        show_field_notes();
+    }
+
+    bool handle_field_notes_key(uint32_t key, bool long_pressed) {
+        if (long_pressed) return true;
+        if (note_stage_ == NoteStage::List) {
+            if (key == LV_KEY_ESC || key == LV_KEY_BACKSPACE) {
+                note_stage_ = NoteStage::None;
+                note_buffer_.clear();
+                note_files_.clear();
+                show_incident_checklist();
+                return true;
+            } else if (key == 'n' || key == 'N') {
+                note_buffer_.clear();
+                note_stage_ = NoteStage::Edit;
+            } else if (key == LV_KEY_ENTER && !note_files_.empty()) {
+                start_field_note_action(NoteAction::Read);
+                return true;
+            } else if ((key == 'd' || key == 'D') && !note_files_.empty()) {
+                note_stage_ = NoteStage::ConfirmDelete;
+            } else if ((key == LV_KEY_UP || key == 'z') && note_selection_ > 0) {
+                --note_selection_;
+            } else if ((key == LV_KEY_DOWN || key == 'c') && note_selection_ + 1 < note_files_.size()) {
+                ++note_selection_;
+            }
+        } else if (note_stage_ == NoteStage::Edit) {
+            if (key == LV_KEY_ESC) {
+                note_buffer_.clear();
+                note_stage_ = NoteStage::List;
+            }
+            else if (key == LV_KEY_BACKSPACE || key == LV_KEY_DEL) {
+                if (!note_buffer_.empty()) note_buffer_.pop_back();
+            } else if (key == LV_KEY_ENTER) {
+                start_field_note_action(NoteAction::Save);
+                return true;
+            } else if (key == '#') {
+                note_notice_ = "Character # is not supported in notes";
+                note_notice_return_ = NoteStage::Edit;
+                note_stage_ = NoteStage::Notice;
+            } else if (key >= 32 && key <= 126) {
+                if (note_buffer_.size() < 160) note_buffer_.push_back(static_cast<char>(key));
+                else {
+                    note_notice_ = "Note limit is 160 characters";
+                    note_notice_return_ = NoteStage::Edit;
+                    note_stage_ = NoteStage::Notice;
+                }
+            }
+        } else if (note_stage_ == NoteStage::Viewing) {
+            if (key == LV_KEY_ESC || key == LV_KEY_BACKSPACE) {
+                note_view_ = {};
+                note_stage_ = NoteStage::List;
+            } else if ((key == LV_KEY_LEFT || key == 'z') && note_page_ > 0) --note_page_;
+            else if ((key == LV_KEY_RIGHT || key == 'c') && (note_page_ + 1) * 60 < note_view_.text.size()) ++note_page_;
+        } else if (note_stage_ == NoteStage::ConfirmDelete) {
+            if (key == LV_KEY_ENTER) {
+                start_field_note_action(NoteAction::Delete);
+                return true;
+            } else if (key == LV_KEY_ESC || key == LV_KEY_BACKSPACE) note_stage_ = NoteStage::List;
+        } else if (note_stage_ == NoteStage::Working) {
+            if (note_task_ && note_task_->action == NoteAction::Read &&
+                (key == LV_KEY_ESC || key == LV_KEY_BACKSPACE)) note_task_->cancelled = true;
+        } else if (note_stage_ == NoteStage::Notice &&
+                   (key == LV_KEY_ENTER || key == LV_KEY_ESC || key == LV_KEY_BACKSPACE)) {
+            if (note_notice_return_ == NoteStage::List) {
+                start_field_note_action(NoteAction::List);
+                return true;
+            }
+            note_stage_ = note_notice_return_;
+            if (note_stage_ == NoteStage::None) {
+                show_incident_checklist();
+                return true;
+            }
+        }
+        show_field_notes();
+        return true;
+    }
+
+    void show_ap_signal_test() {
+        const auto device = platform::read_device_status();
+        std::string message = "AP signal test\n";
+        if (!device.wifi_present) {
+            message += "Wi-Fi unavailable";
+        } else if (!device.wifi_connected) {
+            message += "Connect to an AP you own";
+        } else if (device.wifi_strength_percent < 0) {
+            message += "Signal measurement unavailable";
+        } else {
+            message += "Current link " +
+                       std::to_string(device.wifi_strength_percent) + "%";
+        }
+
+        if (!ap_signal_samples_.empty()) {
+            const auto bounds = std::minmax_element(ap_signal_samples_.begin(),
+                                                    ap_signal_samples_.end());
+            const int total = std::accumulate(ap_signal_samples_.begin(),
+                                              ap_signal_samples_.end(), 0);
+            message += "\n" + std::to_string(ap_signal_samples_.size()) +
+                       "/10 samples  min/avg/max " +
+                       std::to_string(*bounds.first) + "/" +
+                       std::to_string(total / static_cast<int>(ap_signal_samples_.size())) +
+                       "/" + std::to_string(*bounds.second) + "%";
+        } else {
+            message += "\nNo samples yet";
+        }
+        message += ap_signal_samples_.size() < 10
+            ? "\nENTER sample  R reset\nESC back"
+            : "\nLimit reached  R reset\nESC back";
+        toast_->show_persistent(
+            message, device.wifi_connected ? view::widgets::ToastTone::Default
+                                           : view::widgets::ToastTone::Warning);
+    }
+
+    void show_wifi_channel_survey() {
+        std::string message;
+        if (!wifi_result_.error.empty()) {
+            message = "Channel survey error\n" + wifi_result_.error;
+        } else if (wifi_result_.networks.empty()) {
+            message = "No visible Wi-Fi APs";
+        } else {
+            message = "Top 3 visible AP channels\n";
+            const auto summary = platform::summarize_wifi_channels(wifi_result_.networks);
+            if (summary.empty()) {
+                message += "No known channel data";
+            } else {
+                const auto shown = std::min<std::size_t>(summary.size(), 3);
+                for (std::size_t index = 0; index < shown; ++index) {
+                    if (index > 0) message += "\n";
+                    const auto& channel = summary[index];
+                    message += channel.band + " ch " + std::to_string(channel.channel) +
+                               ": " + std::to_string(channel.access_points) + " APs";
+                }
+            }
+        }
+        message += "\nENTER/R rescan  ESC back";
+        toast_->show_persistent(
+            message, wifi_result_.error.empty() ? view::widgets::ToastTone::Default
+                                                : view::widgets::ToastTone::Warning);
+    }
+
+    bool handle_ap_signal_test_key(uint32_t key, bool long_pressed) {
+        if (long_pressed) return true;
+        if (key == LV_KEY_ESC || key == LV_KEY_BACKSPACE) {
+            ap_signal_test_active_ = false;
+            ap_signal_samples_.clear();
+            toast_->hide();
+        } else if (key == 'r' || key == 'R') {
+            ap_signal_samples_.clear();
+            show_ap_signal_test();
+        } else if (key == LV_KEY_ENTER && ap_signal_samples_.size() < 10) {
+            const auto device = platform::read_device_status();
+            if (device.wifi_present && device.wifi_connected &&
+                device.wifi_strength_percent >= 0) {
+                ap_signal_samples_.push_back(device.wifi_strength_percent);
+            }
+            show_ap_signal_test();
+        }
+        return true;
+    }
+
+    void show_security_logs() {
+        std::string message;
+        switch (security_log_stage_) {
+            case SecurityLogStage::Working:
+                message = "Working with security logs...\nPlease wait";
+                break;
+            case SecurityLogStage::List:
+                if (security_log_export_mode_) {
+                    if (security_export_files_.empty()) {
+                        message = "No evidence exports\nE logs  ESC close";
+                    } else {
+                        message = "Evidence file " + std::to_string(security_log_selection_ + 1) +
+                                  "/" + std::to_string(security_export_files_.size()) + "\n" +
+                                  security_export_files_[security_log_selection_] +
+                                  "\nUP/DOWN D delete A delete all\nE logs  ESC close";
+                    }
+                } else if (security_logs_.empty()) {
+                    message = "No saved security logs\nE exports  ESC close";
+                } else {
+                    message = "Security log " + std::to_string(security_log_selection_ + 1) +
+                              "/" + std::to_string(security_logs_.size()) + "\n" +
+                              security_logs_[security_log_selection_].filename +
+                              "\nUP/DOWN  D delete  X export\nE exports  ESC close";
+                }
+                break;
+            case SecurityLogStage::ConfirmDelete:
+                message = security_log_export_mode_
+                    ? "Delete this export file?\nIts paired file may remain.\nENTER delete  ESC cancel"
+                    : "Delete original log?\n" + security_logs_[security_log_selection_].filename +
+                      "\nExports are not deleted.\nENTER delete  ESC cancel";
+                break;
+            case SecurityLogStage::ConfirmDeleteAll:
+                message = "Delete ALL evidence exports?\nOriginals and backups remain.\nENTER delete  ESC cancel";
+                break;
+            case SecurityLogStage::ConfirmExport:
+                message = "Copy selected security log?\nMay contain identifiers.\n"
+                          "ENTER copy + SHA-256  ESC";
+                break;
+            case SecurityLogStage::Notice:
+                message = security_log_notice_ + "\nENTER refresh  ESC close";
+                break;
+            case SecurityLogStage::None:
+                return;
+        }
+        toast_->show_persistent(message, security_log_stage_ == SecurityLogStage::Notice
+                                             ? view::widgets::ToastTone::Warning
+                                             : view::widgets::ToastTone::Default);
+    }
+
+    void start_security_log_history_action(SecurityLogAction action) {
+        const char* home = std::getenv("HOME");
+        if (!home || !std::filesystem::u8path(home).is_absolute()) {
+            security_log_notice_ = "HOME is not an absolute path";
+            security_log_stage_ = SecurityLogStage::Notice;
+            show_security_logs();
+            return;
+        }
+        const auto root = std::filesystem::u8path(home);
+        platform::SecurityLogEntry selected;
+        if (action == SecurityLogAction::Delete || action == SecurityLogAction::Export)
+            selected = security_logs_[security_log_selection_];
+        const std::string export_name = action == SecurityLogAction::DeleteExport
+            ? security_export_files_[security_log_selection_] : "";
+        if (action == SecurityLogAction::List) security_log_export_mode_ = false;
+        if (action == SecurityLogAction::ListExports) security_log_export_mode_ = true;
+        auto task = std::make_shared<SecurityLogTask>();
+        task->action = action;
+        security_log_task_ = task;
+        security_log_stage_ = SecurityLogStage::Working;
+        show_security_logs();
+        try {
+            security_log_thread_ = std::thread([task, root, selected, export_name] {
+                try {
+                    const auto directory = platform::security_log_directory(root, selected.source);
+                    if (task->action == SecurityLogAction::Delete) {
+                        task->error = platform::delete_security_log(
+                            directory, selected.filename, selected.source);
+                    } else if (task->action == SecurityLogAction::Export) {
+                        task->error = platform::export_evidence(
+                            directory, selected.filename, root / "poseidon-evidence",
+                            selected.source).error;
+                    } else if (task->action == SecurityLogAction::List) {
+                        task->logs = platform::list_security_logs(root);
+                        task->error = task->logs.error;
+                    } else if (task->action == SecurityLogAction::ListExports) {
+                        task->exports = platform::list_evidence_files(root / "poseidon-evidence");
+                        task->error = task->exports.error;
+                    } else if (task->action == SecurityLogAction::DeleteExport) {
+                        task->error = platform::delete_evidence_file(root / "poseidon-evidence", export_name);
+                    } else {
+                        task->error = platform::delete_all_evidence_files(root / "poseidon-evidence");
+                    }
+                } catch (const std::exception& failure) {
+                    task->error = std::string("Security logs: ") + failure.what();
+                }
+                task->complete = true;
+            });
+        } catch (const std::system_error& failure) {
+            security_log_task_.reset();
+            security_log_notice_ = "Cannot start log action: " + failure.code().message();
+            security_log_stage_ = SecurityLogStage::Notice;
+            show_security_logs();
+        }
+    }
+
+    void update_security_logs() {
+        if (!security_log_task_ || !security_log_task_->complete) return;
+        if (security_log_thread_.joinable()) security_log_thread_.join();
+        const auto task = security_log_task_;
+        security_log_task_.reset();
+        if (!task->error.empty()) {
+            security_log_notice_ = task->error;
+            security_log_stage_ = SecurityLogStage::Notice;
+        } else if (task->action == SecurityLogAction::List) {
+            security_logs_ = std::move(task->logs.entries);
+            security_log_selection_ = 0;
+            security_log_stage_ = SecurityLogStage::List;
+        } else if (task->action == SecurityLogAction::ListExports) {
+            security_export_files_ = std::move(task->exports.names);
+            security_log_selection_ = 0;
+            security_log_stage_ = SecurityLogStage::List;
+        } else {
+            security_log_notice_ = task->action == SecurityLogAction::Delete ? "Original deleted\nExports remain" :
+                task->action == SecurityLogAction::Export ? "Copy + SHA-256 saved\n~/poseidon-evidence" :
+                task->action == SecurityLogAction::DeleteExport ? "Export file deleted\nOther files remain" :
+                "Evidence exports deleted\nOriginals and backups remain";
+            security_log_stage_ = SecurityLogStage::Notice;
+        }
+        show_security_logs();
+    }
+
+    bool handle_security_logs_key(uint32_t key, bool long_pressed) {
+        if (long_pressed) return true;
+        if (security_log_stage_ == SecurityLogStage::List) {
+            const auto count = security_log_export_mode_ ? security_export_files_.size() : security_logs_.size();
+            if (key == LV_KEY_ESC || key == LV_KEY_BACKSPACE) {
+                security_log_stage_ = SecurityLogStage::None;
+                toast_->hide();
+                return true;
+            } else if ((key == LV_KEY_UP || key == 'z') && security_log_selection_ > 0) {
+                --security_log_selection_;
+            } else if ((key == LV_KEY_DOWN || key == 'c') &&
+                       security_log_selection_ + 1 < count) {
+                ++security_log_selection_;
+            } else if (key == 'e' || key == 'E') {
+                start_security_log_history_action(security_log_export_mode_
+                    ? SecurityLogAction::List : SecurityLogAction::ListExports);
+                return true;
+            } else if ((key == 'd' || key == 'D') && count) {
+                security_log_stage_ = SecurityLogStage::ConfirmDelete;
+            } else if ((key == 'a' || key == 'A') && security_log_export_mode_ && count) {
+                security_log_stage_ = SecurityLogStage::ConfirmDeleteAll;
+            } else if ((key == 'x' || key == 'X') && !security_log_export_mode_ && count) {
+                security_log_stage_ = SecurityLogStage::ConfirmExport;
+            }
+            show_security_logs();
+        } else if (security_log_stage_ == SecurityLogStage::ConfirmDelete ||
+                   security_log_stage_ == SecurityLogStage::ConfirmExport ||
+                   security_log_stage_ == SecurityLogStage::ConfirmDeleteAll) {
+            if (key == LV_KEY_ENTER) {
+                const auto action = security_log_stage_ == SecurityLogStage::ConfirmDeleteAll
+                    ? SecurityLogAction::DeleteAllExports :
+                    security_log_stage_ == SecurityLogStage::ConfirmExport ? SecurityLogAction::Export :
+                    security_log_export_mode_ ? SecurityLogAction::DeleteExport : SecurityLogAction::Delete;
+                start_security_log_history_action(action);
+            } else if (key == LV_KEY_ESC || key == LV_KEY_BACKSPACE) {
+                security_log_stage_ = SecurityLogStage::List;
+                show_security_logs();
+            }
+        } else if (security_log_stage_ == SecurityLogStage::Notice) {
+            if (key == LV_KEY_ENTER) {
+                start_security_log_history_action(security_log_export_mode_
+                    ? SecurityLogAction::ListExports : SecurityLogAction::List);
+            } else if (key == LV_KEY_ESC || key == LV_KEY_BACKSPACE) {
+                security_log_stage_ = SecurityLogStage::None;
+                toast_->hide();
+            }
+        }
+        return true;
+    }
+
+    void show_surveillance() {
+        std::string text;
+        if (surveillance_stage_ == SurveillanceStage::Confirm) {
+            text = "Wi-Fi/BLE scans may transmit.\nCamera name hints only.\n"
+                   "Unverified and incomplete.\nENTER scan  ESC cancel";
+        } else if (surveillance_stage_ == SurveillanceStage::Scanning) {
+            text = "Scanning Wi-Fi and BLE...\nESC cancels";
+        } else if (surveillance_stage_ == SurveillanceStage::Results) {
+            if (!surveillance_result_.error.empty()) {
+                text = "Camera hint scan error\n" + surveillance_result_.error +
+                       "\nENTER retry  ESC close";
+            } else if (surveillance_result_.hints.empty()) {
+                text = "No matching camera names\nNot proof none are present" +
+                       std::string(surveillance_result_.results_may_be_truncated
+                                       ? "\nScan limited" : "") +
+                       "\nENTER rescan  ESC close";
+            } else {
+                const auto& hint = surveillance_result_.hints[surveillance_selection_];
+                text = hint.transport + " name hint " +
+                       std::to_string(surveillance_selection_ + 1) + "/" +
+                       std::to_string(surveillance_result_.hints.size()) + "\n" +
+                       file_display_text(hint.name, 28) + "\n" + hint.address +
+                       (surveillance_result_.results_may_be_truncated
+                            ? "\nUnverified; scan limited"
+                            : surveillance_result_.stale_wifi
+                                ? "\nUnverified; stale APs skipped" : "\nUnverified name only") +
+                       "\nUP/DOWN  R rescan  ESC";
+            }
+        } else {
+            return;
+        }
+        toast_->show_persistent(text, surveillance_result_.error.empty()
+            ? view::widgets::ToastTone::Default : view::widgets::ToastTone::Warning);
+    }
+
+    void start_surveillance_scan() {
+        if (surveillance_task_ || wifi_task_ || gatt_task_ || survey_session_) {
+            surveillance_result_ = {};
+            surveillance_result_.error = "Previous scan is still stopping";
+            surveillance_stage_ = SurveillanceStage::Results;
+            show_surveillance();
+            return;
+        }
+        auto task = std::make_shared<SurveillanceTask>();
+        surveillance_task_ = task;
+        surveillance_stage_ = SurveillanceStage::Scanning;
+        surveillance_result_ = {};
+        show_surveillance();
+        try {
+            surveillance_thread_ = std::thread([task] {
+                try {
+                    task->result = platform::scan_surveillance_hints(task->cancelled);
+                } catch (const std::exception& failure) {
+                    task->result.error = std::string("Scan failed: ") + failure.what();
+                }
+                task->complete = true;
+            });
+        } catch (const std::system_error& failure) {
+            surveillance_task_.reset();
+            surveillance_result_.error = "Cannot start scan: " + failure.code().message();
+            surveillance_stage_ = SurveillanceStage::Results;
+            show_surveillance();
+        }
+    }
+
+    void update_surveillance() {
+        if (!surveillance_task_ || !surveillance_task_->complete) return;
+        if (surveillance_thread_.joinable()) surveillance_thread_.join();
+        const auto task = surveillance_task_;
+        surveillance_task_.reset();
+        if (task->cancelled) {
+            if (!task->result.error.empty()) {
+                LOG_WARN("Camera hint scan cleanup failed: {}", task->result.error);
+                toast_->show("Scan cleanup failed\n" + task->result.error,
+                             view::widgets::ToastTone::Warning, 5200);
+            }
+            return;
+        }
+        surveillance_result_ = std::move(task->result);
+        surveillance_selection_ = 0;
+        surveillance_stage_ = SurveillanceStage::Results;
+        show_surveillance();
+    }
+
+    bool handle_surveillance_key(uint32_t key, bool long_pressed) {
+        if (long_pressed) return true;
+        if (key == LV_KEY_ESC || key == LV_KEY_BACKSPACE) {
+            if (surveillance_task_) surveillance_task_->cancelled = true;
+            surveillance_stage_ = SurveillanceStage::None;
+            toast_->hide();
+        } else if (surveillance_stage_ == SurveillanceStage::Confirm && key == LV_KEY_ENTER) {
+            start_surveillance_scan();
+        } else if (surveillance_stage_ == SurveillanceStage::Results) {
+            if ((key == LV_KEY_UP || key == 'z') && surveillance_selection_ > 0) {
+                --surveillance_selection_;
+                show_surveillance();
+            } else if ((key == LV_KEY_DOWN || key == 'c') &&
+                       surveillance_selection_ + 1 < surveillance_result_.hints.size()) {
+                ++surveillance_selection_;
+                show_surveillance();
+            } else if (key == 'r' || key == 'R' ||
+                       (key == LV_KEY_ENTER && (surveillance_result_.hints.empty() ||
+                                                !surveillance_result_.error.empty()))) {
+                start_surveillance_scan();
+            }
+        }
+        return true;
+    }
+
+    bool survey_directory(std::filesystem::path& directory, std::string& error) {
+        const char* home = std::getenv("HOME");
+        if (!home || !std::filesystem::path(home).is_absolute()) {
+            error = "HOME is not an absolute path";
+            return false;
+        }
+        directory = std::filesystem::path(home) / "poseidon-surveys";
+        return true;
+    }
+
+    void show_survey() {
+        std::string message;
+        switch (survey_stage_) {
+            case SurveyStage::Home:
+                message = "Wireless survey\nWi-Fi/BLE scans may transmit\n"
+                          "ENTER start  S sessions\nESC back";
+                break;
+            case SurveyStage::Running:
+            case SurveyStage::Stopping: {
+                const auto status = survey_session_->status();
+                if (survey_quality_ && survey_stage_ == SurveyStage::Running) {
+                    message = "Survey row quality\nGPS tagged " + std::to_string(status.gps_tagged) +
+                              "  missing " + std::to_string(status.gps_untagged) +
+                              "\nStale Wi-Fi skipped " + std::to_string(status.wifi_skipped) +
+                              (status.results_may_be_truncated ? "\nResults may be limited" :
+                                                               "\nCoverage not guaranteed") +
+                              "\nQ back  ESC stop";
+                } else {
+                    message = status.phase + "\nWi-Fi " + std::to_string(status.wifi_count) +
+                              " BLE " + std::to_string(status.ble_count) + "\n" +
+                              "Hints " + std::to_string(status.indicator_count) +
+                              "  watch rows " + std::to_string(status.watchlist_rows) +
+                              "\nHints unverified\n" +
+                              status.gps_status +
+                              (status.results_may_be_truncated ? "\nResults may be limited" : "") +
+                              (survey_stage_ == SurveyStage::Stopping ? "\nStopping..."
+                                                                      : "\nQ quality  ESC stop");
+                }
+                break;
+            }
+            case SurveyStage::Sessions:
+                if (survey_files_.empty()) {
+                    message = "No saved surveys\nESC back";
+                } else {
+                    message = "Survey " + std::to_string(survey_selection_ + 1) + "/" +
+                              std::to_string(survey_files_.size()) + "\n" +
+                              survey_files_[survey_selection_] +
+                              "\nUP/DOWN T timeline D delete\nX export  A delete all  ESC";
+                }
+                break;
+            case SurveyStage::Timeline:
+                if (survey_watch_filter_ && !survey_timeline_.indicators_available) {
+                    message = "Watch filter unavailable\nNo indicator column in file\nW timeline P plot G GPX ESC";
+                } else if (survey_watch_filter_ && survey_watch_indices_.empty()) {
+                    message = "No watch matches in latest\n" +
+                              std::to_string(survey_timeline_.entries.size()) +
+                              " rows; not proof of absence\nW timeline P plot G GPX ESC";
+                } else if (survey_timeline_.entries.empty()) {
+                    message = "Survey timeline\nNo observation rows\nW filter P plot G GPX ESC";
+                } else {
+                    const auto index = survey_watch_filter_ ? survey_watch_indices_[survey_timeline_selection_]
+                                                            : survey_timeline_selection_;
+                    const auto& entry = survey_timeline_.entries[index];
+                    const auto visible = survey_watch_filter_ ? survey_watch_indices_.size()
+                                                              : survey_timeline_.entries.size();
+                    message = std::string(survey_watch_filter_ ? "Watch " : "Timeline ") +
+                              std::to_string(survey_timeline_selection_ + 1) + "/" +
+                              std::to_string(visible) +
+                              (survey_timeline_.total_rows > survey_timeline_.entries.size() ? " (latest)" : "") +
+                              "\n" + file_display_text(entry.recorded_utc, 25) +
+                              "\n" + file_display_text(entry.source, 8) + " " +
+                              file_display_text(entry.name, 20) +
+                              (entry.gps_latitude.empty() ? "\nObserver GPS unavailable" :
+                               "\nObserver GPS " + file_display_text(entry.gps_latitude, 13) + "," +
+                               file_display_text(entry.gps_longitude, 14)) +
+                              "\nZ/C W filter P plot\nG GPX M map Q QR ESC";
+                }
+                break;
+            case SurveyStage::MapNotice:
+                message = survey_notice_ + "\nZ/C zoom ENTER/ESC back";
+                break;
+            case SurveyStage::QrNotice:
+                message = survey_notice_ + "\nENTER/ESC back";
+                break;
+            case SurveyStage::ConfirmQr:
+                message = "Show receiver GPS in QR?\nAnyone nearby can scan it.\n"
+                          "No names or radio IDs.\nENTER show  ESC cancel";
+                break;
+            case SurveyStage::ConfirmOne:
+                message = "Delete selected survey?\n" + survey_files_[survey_selection_] +
+                          "\nENTER delete  ESC cancel";
+                break;
+            case SurveyStage::ConfirmExport:
+                message = "Copy selected survey?\nMay contain GPS and identifiers.\n"
+                          "ENTER copy + SHA-256  ESC";
+                break;
+            case SurveyStage::ConfirmGpx:
+                message = "Export latest 128 rows GPS?\nReceiver points; all rows\n"
+                          "Separate file; ENTER yes ESC no";
+                break;
+            case SurveyStage::ConfirmAll:
+                message = "Delete ALL survey sessions?\nExports are not deleted\n"
+                          "ENTER delete  ESC cancel";
+                break;
+            case SurveyStage::FileOperation:
+                message = survey_file_task_ && survey_file_task_->action == SurveyFileAction::Timeline
+                              ? "Reading survey timeline...\nESC cancels"
+                              : "Working with survey files...\nPlease wait";
+                break;
+            case SurveyStage::Notice:
+                message = survey_notice_ + "\nENTER/ESC back";
+                break;
+            case SurveyStage::None:
+                return;
+        }
+        toast_->show_persistent(message, survey_stage_ == SurveyStage::Notice
+                                             ? view::widgets::ToastTone::Warning
+                                             : view::widgets::ToastTone::Default);
+    }
+
+    void start_survey_map(uint32_t zoom) {
+        survey_map_zoom_ = zoom;
+        const auto visible = survey_watch_filter_ ? survey_watch_indices_.size()
+                                                   : survey_timeline_.entries.size();
+        if (visible == 0) {
+            survey_notice_ = "Select a timeline row first";
+            survey_stage_ = SurveyStage::MapNotice;
+            show_survey();
+            return;
+        }
+        const auto index = survey_watch_filter_ ? survey_watch_indices_[survey_timeline_selection_]
+                                                : survey_timeline_selection_;
+        const auto tile = platform::survey_map_tile(survey_timeline_.entries[index], zoom);
+        const char* home = std::getenv("HOME");
+        if (!tile.error.empty() || !home || !std::filesystem::path(home).is_absolute()) {
+            survey_notice_ = !tile.error.empty() ? tile.error : "HOME is not an absolute path";
+            survey_stage_ = SurveyStage::MapNotice;
+            show_survey();
+            return;
+        }
+        if (gallery_task_) {
+            survey_notice_ = "Previous image read is stopping";
+            survey_stage_ = SurveyStage::MapNotice;
+            show_survey();
+            return;
+        }
+        const auto root = std::filesystem::path(home) / "poseidon-maps";
+        const auto path = root /
+                          std::to_string(tile.zoom) / std::to_string(tile.x) /
+                          (std::to_string(tile.y) + ".png");
+        auto task = std::make_shared<GalleryQueryState>();
+        task->survey_map = true;
+        task->map_tile = tile;
+        gallery_task_ = task;
+        try {
+            gallery_thread_ = std::thread([task, path, root] {
+                platform::GalleryImage image;
+                platform::SurveyMapAttribution attribution;
+                try {
+                    attribution = platform::read_survey_map_attribution(root / "attribution.txt");
+                    if (!attribution.error.empty()) {
+                        image.error = attribution.error;
+                    } else {
+                        image = platform::read_gallery_image(path, &task->cancelled);
+                        if (image.error.empty() && (image.width != 256 || image.height != 256))
+                            image.error = "Map tile must be 256x256";
+                    }
+                } catch (const std::exception& error) {
+                    image.error = std::string("Map read failed: ") + error.what();
+                }
+                std::lock_guard<std::mutex> lock(task->mutex);
+                task->result = std::move(image);
+                task->map_attribution = std::move(attribution.text);
+                task->map_attribution_glyphs = std::move(attribution.glyphs);
+                task->complete = true;
+            });
+        } catch (const std::system_error& error) {
+            gallery_task_.reset();
+            survey_notice_ = "Cannot start map read: " + error.code().message();
+            survey_stage_ = SurveyStage::MapNotice;
+            show_survey();
+            return;
+        }
+        gallery_loading_ = true;
+        toast_->show_persistent("Opening offline map tile\nESC cancels");
+    }
+
+    void show_survey_qr() {
+        const auto visible = survey_watch_filter_ ? survey_watch_indices_.size()
+                                                  : survey_timeline_.entries.size();
+        if (!visible) {
+            survey_notice_ = "Select a timeline row first";
+            survey_stage_ = SurveyStage::QrNotice;
+            show_survey();
+            return;
+        }
+        const auto index = survey_watch_filter_ ? survey_watch_indices_[survey_timeline_selection_]
+                                                : survey_timeline_selection_;
+        auto qr = make_survey_qr(survey_timeline_.entries[index]);
+        if (!qr.error.empty()) {
+            survey_notice_ = qr.error;
+            survey_stage_ = SurveyStage::QrNotice;
+            show_survey();
+            return;
+        }
+        gallery_pixels_ = std::move(qr.pixels);
+        gallery_image_ = {};
+        gallery_image_.header.magic = LV_IMAGE_HEADER_MAGIC;
+        gallery_image_.header.cf = LV_COLOR_FORMAT_ARGB8888;
+        gallery_image_.header.w = qr.width;
+        gallery_image_.header.h = qr.width;
+        gallery_image_.header.stride = qr.width * 4U;
+        gallery_image_.data_size = static_cast<uint32_t>(gallery_pixels_.size());
+        gallery_image_.data = gallery_pixels_.data();
+        survey_stage_ = SurveyStage::Timeline;
+        visual_tool_mode_ = VisualToolMode::SurveyQr;
+        if (!create_visual_overlay()) {
+            close_visual_tool();
+            survey_notice_ = "Could not open GPS QR";
+            survey_stage_ = SurveyStage::QrNotice;
+            show_survey();
+            return;
+        }
+        auto* image = lv_image_create(overlay_);
+        if (!image) {
+            close_visual_tool();
+            survey_notice_ = "Could not create GPS QR";
+            survey_stage_ = SurveyStage::QrNotice;
+            show_survey();
+            return;
+        }
+        lv_obj_set_style_bg_color(overlay_, lv_color_black(), 0);
+        lv_image_set_src(image, &gallery_image_);
+        lv_obj_align(image, LV_ALIGN_LEFT_MID, 4, 0);
+        lv_label_set_text(screen_test_label_,
+                          "Receiver GPS\nCoordinates only\nNot transmitter\nlocation\n\nESC back");
+        lv_obj_set_style_text_color(screen_test_label_, lv_color_white(), 0);
+        lv_obj_align(screen_test_label_, LV_ALIGN_RIGHT_MID, -4, 0);
+        lv_obj_move_foreground(screen_test_label_);
+    }
+
+    void start_survey() {
+#if USE_DESKTOP
+        survey_notice_ = "Survey requires a supported device";
+        survey_stage_ = SurveyStage::Notice;
+        show_survey();
+        return;
+#endif
+        if (wifi_task_ || gatt_task_ || surveillance_task_) {
+            survey_notice_ = "Previous scan is still stopping";
+            survey_stage_ = SurveyStage::Notice;
+            show_survey();
+            return;
+        }
+        std::filesystem::path directory;
+        std::string error;
+        if (!survey_directory(directory, error)) {
+            survey_notice_ = error;
+            survey_stage_ = SurveyStage::Notice;
+            show_survey();
+            return;
+        }
+        const char* gps = std::getenv("POSEIDON_GPS_DEVICE");
+        survey_session_ = platform::SurveySession::start(directory, gps ? gps : "", error);
+        if (!survey_session_) {
+            survey_notice_ = error;
+            survey_stage_ = SurveyStage::Notice;
+        } else {
+            survey_stage_ = SurveyStage::Running;
+            survey_quality_ = false;
+            survey_next_update_ = {};
+        }
+        show_survey();
+    }
+
+    void start_survey_file_action(SurveyFileAction action) {
+        std::filesystem::path directory;
+        std::string error;
+        if (!survey_directory(directory, error)) {
+            survey_notice_ = error;
+            survey_stage_ = SurveyStage::Notice;
+            show_survey();
+            return;
+        }
+        const std::string name = action == SurveyFileAction::DeleteOne || action == SurveyFileAction::Export ||
+                                         action == SurveyFileAction::Timeline
+                                     ? survey_files_[survey_selection_] : "";
+        auto task = std::make_shared<SurveyFileTask>();
+        task->action = action;
+        if (action == SurveyFileAction::Gpx) task->timeline = survey_timeline_;
+        survey_file_task_ = task;
+        survey_stage_ = SurveyStage::FileOperation;
+        show_survey();
+        try {
+            survey_file_thread_ = std::thread([task, directory, name] {
+                try {
+                    if (task->action == SurveyFileAction::DeleteOne)
+                        task->error = platform::delete_survey_file(directory, name);
+                    else if (task->action == SurveyFileAction::DeleteAll)
+                        task->error = platform::delete_all_survey_files(directory);
+                    else if (task->action == SurveyFileAction::Export) {
+                        task->evidence = platform::export_evidence(
+                            directory, name, directory.parent_path() / "poseidon-evidence",
+                            platform::EvidenceSource::Survey);
+                        task->error = task->evidence.error;
+                    } else if (task->action == SurveyFileAction::Timeline) {
+                        task->timeline = platform::read_survey_timeline(directory, name, task->cancelled);
+                        task->error = task->timeline.error;
+                    } else if (task->action == SurveyFileAction::Gpx) {
+                        task->gpx = platform::export_survey_gpx(
+                            directory.parent_path() / "poseidon-evidence", task->timeline);
+                        task->error = task->gpx.error;
+                    }
+                    if (task->error.empty() && task->action != SurveyFileAction::Timeline &&
+                        task->action != SurveyFileAction::Gpx) {
+                        task->files = platform::list_survey_files(directory);
+                        task->error = task->files.error;
+                    }
+                } catch (const std::exception& failure) {
+                    task->error = std::string("Survey files: ") + failure.what();
+                }
+                task->complete = true;
+            });
+        } catch (const std::system_error& failure) {
+            survey_file_task_.reset();
+            survey_notice_ = "Cannot start file action: " + failure.code().message();
+            survey_stage_ = SurveyStage::Notice;
+            show_survey();
+        }
+    }
+
+    void update_survey() {
+        if (survey_file_task_ && survey_file_task_->complete) {
+            if (survey_file_thread_.joinable()) survey_file_thread_.join();
+            const auto task = survey_file_task_;
+            survey_file_task_.reset();
+            if (!task->error.empty() ||
+                (task->action == SurveyFileAction::Timeline && task->cancelled)) {
+                survey_notice_ = task->error.empty() ? "Timeline cancelled" : task->error;
+                survey_stage_ = SurveyStage::Notice;
+            } else if (task->action == SurveyFileAction::Export) {
+                survey_notice_ = "Evidence saved in\n~/poseidon-evidence\n" +
+                                 task->evidence.manifest_path.filename().u8string();
+                survey_stage_ = SurveyStage::Notice;
+            } else if (task->action == SurveyFileAction::Gpx) {
+                survey_notice_ = "GPS export: " + std::to_string(task->gpx.points) +
+                                 " points\n~/poseidon-evidence\n" +
+                                 task->gpx.path.filename().u8string();
+                survey_stage_ = SurveyStage::Notice;
+            } else if (task->action == SurveyFileAction::Timeline) {
+                survey_timeline_ = std::move(task->timeline);
+                survey_watch_filter_ = false;
+                survey_watch_indices_.clear();
+                for (std::size_t i = 0; i < survey_timeline_.entries.size(); ++i)
+                    if (platform::survey_watchlist_match(survey_timeline_.entries[i].indicators))
+                        survey_watch_indices_.push_back(i);
+                survey_timeline_selection_ = survey_timeline_.entries.empty()
+                    ? 0 : survey_timeline_.entries.size() - 1;
+                survey_stage_ = SurveyStage::Timeline;
+            } else {
+                survey_files_ = task->files.names;
+                survey_selection_ = 0;
+                survey_stage_ = SurveyStage::Sessions;
+            }
+            show_survey();
+        }
+        if (!survey_session_) return;
+        const auto status = survey_session_->status();
+        if (status.complete) {
+            survey_session_.reset();
+            survey_notice_ = status.error.empty() ? "Survey saved\n" + status.file_name
+                                                  : "Survey stopped: " + status.error;
+            if (status.results_may_be_truncated) survey_notice_ += "\nResults may be limited";
+            if (status.wifi_skipped) survey_notice_ += "\nStale/unknown APs skipped";
+            if (status.gps_untagged) survey_notice_ += "\nRows without GPS: " + std::to_string(status.gps_untagged);
+            survey_stage_ = SurveyStage::Notice;
+            show_survey();
+        } else if (std::chrono::steady_clock::now() >= survey_next_update_) {
+            show_survey();
+            survey_next_update_ = std::chrono::steady_clock::now() + std::chrono::seconds(1);
+        }
+    }
+
+    bool handle_survey_key(uint32_t key, bool long_pressed) {
+        if (long_pressed) return true;
+        if (survey_stage_ == SurveyStage::Running) {
+            if (key == LV_KEY_ESC || key == LV_KEY_BACKSPACE) {
+                survey_session_->stop();
+                survey_stage_ = SurveyStage::Stopping;
+                show_survey();
+            } else if (key == 'q' || key == 'Q') {
+                survey_quality_ = !survey_quality_;
+                show_survey();
+            }
+        } else if (survey_stage_ == SurveyStage::Home) {
+            if (key == LV_KEY_ENTER) start_survey();
+            else if (key == 's' || key == 'S') start_survey_file_action(SurveyFileAction::List);
+            else if (key == LV_KEY_ESC || key == LV_KEY_BACKSPACE) {
+                survey_stage_ = SurveyStage::None;
+                toast_->hide();
+            }
+        } else if (survey_stage_ == SurveyStage::Sessions) {
+            if (key == LV_KEY_ESC || key == LV_KEY_BACKSPACE) {
+                survey_stage_ = SurveyStage::Home;
+            } else if ((key == LV_KEY_UP || key == 'z') && survey_selection_ > 0) {
+                --survey_selection_;
+            } else if ((key == LV_KEY_DOWN || key == 'c') &&
+                       survey_selection_ + 1 < survey_files_.size()) {
+                ++survey_selection_;
+            } else if ((key == 'd' || key == 'D') && !survey_files_.empty()) {
+                survey_stage_ = SurveyStage::ConfirmOne;
+            } else if ((key == 'x' || key == 'X') && !survey_files_.empty()) {
+                survey_stage_ = SurveyStage::ConfirmExport;
+            } else if ((key == 't' || key == 'T') && !survey_files_.empty()) {
+                start_survey_file_action(SurveyFileAction::Timeline);
+            } else if ((key == 'a' || key == 'A') && !survey_files_.empty()) {
+                survey_stage_ = SurveyStage::ConfirmAll;
+            }
+            show_survey();
+        } else if (survey_stage_ == SurveyStage::Timeline) {
+            if (key == LV_KEY_ESC || key == LV_KEY_BACKSPACE) {
+                survey_timeline_ = {};
+                survey_watch_indices_.clear();
+                survey_watch_filter_ = false;
+                survey_stage_ = SurveyStage::Sessions;
+            } else if (key == 'p' || key == 'P') {
+                show_survey_plot();
+                return true;
+            } else if (key == 'm' || key == 'M') {
+                start_survey_map(14);
+                return true;
+            } else if (key == 'q' || key == 'Q') {
+                survey_stage_ = SurveyStage::ConfirmQr;
+            } else if (key == 'g' || key == 'G') {
+                survey_stage_ = SurveyStage::ConfirmGpx;
+            } else if (key == 'w' || key == 'W') {
+                survey_watch_filter_ = !survey_watch_filter_;
+                const auto visible = survey_watch_filter_ ? survey_watch_indices_.size()
+                                                          : survey_timeline_.entries.size();
+                survey_timeline_selection_ = visible ? visible - 1 : 0;
+            } else if ((key == LV_KEY_UP || key == 'z') && survey_timeline_selection_ > 0) {
+                --survey_timeline_selection_;
+            } else if ((key == LV_KEY_DOWN || key == 'c') &&
+                       survey_timeline_selection_ + 1 <
+                           (survey_watch_filter_ ? survey_watch_indices_.size()
+                                                 : survey_timeline_.entries.size())) {
+                ++survey_timeline_selection_;
+            }
+            show_survey();
+        } else if (survey_stage_ == SurveyStage::ConfirmQr) {
+            if (key == LV_KEY_ENTER) show_survey_qr();
+            else if (key == LV_KEY_ESC || key == LV_KEY_BACKSPACE) {
+                survey_stage_ = SurveyStage::Timeline;
+                show_survey();
+            }
+        } else if (survey_stage_ == SurveyStage::QrNotice &&
+                   (key == LV_KEY_ENTER || key == LV_KEY_ESC || key == LV_KEY_BACKSPACE)) {
+            survey_stage_ = SurveyStage::Timeline;
+            show_survey();
+        } else if (survey_stage_ == SurveyStage::MapNotice &&
+                   (key == LV_KEY_ENTER || key == LV_KEY_ESC || key == LV_KEY_BACKSPACE)) {
+            survey_stage_ = SurveyStage::Timeline;
+            show_survey();
+        } else if (survey_stage_ == SurveyStage::MapNotice &&
+                   (key == LV_KEY_LEFT || key == 'z') && survey_map_zoom_ > 0) {
+            survey_stage_ = SurveyStage::Timeline;
+            start_survey_map(survey_map_zoom_ - 1);
+        } else if (survey_stage_ == SurveyStage::MapNotice &&
+                   (key == LV_KEY_RIGHT || key == 'c') && survey_map_zoom_ < 18) {
+            survey_stage_ = SurveyStage::Timeline;
+            start_survey_map(survey_map_zoom_ + 1);
+        } else if (survey_stage_ == SurveyStage::FileOperation && survey_file_task_ &&
+                   survey_file_task_->action == SurveyFileAction::Timeline &&
+                   (key == LV_KEY_ESC || key == LV_KEY_BACKSPACE)) {
+            survey_file_task_->cancelled = true;
+            toast_->show_persistent("Cancelling timeline...");
+        } else if (survey_stage_ == SurveyStage::ConfirmGpx) {
+            if (key == LV_KEY_ENTER) start_survey_file_action(SurveyFileAction::Gpx);
+            else if (key == LV_KEY_ESC || key == LV_KEY_BACKSPACE) {
+                survey_stage_ = SurveyStage::Timeline;
+                show_survey();
+            }
+        } else if (survey_stage_ == SurveyStage::ConfirmOne ||
+                   survey_stage_ == SurveyStage::ConfirmExport ||
+                   survey_stage_ == SurveyStage::ConfirmAll) {
+            if (key == LV_KEY_ENTER) {
+                start_survey_file_action(survey_stage_ == SurveyStage::ConfirmOne
+                    ? SurveyFileAction::DeleteOne : survey_stage_ == SurveyStage::ConfirmExport
+                    ? SurveyFileAction::Export : SurveyFileAction::DeleteAll);
+            } else if (key == LV_KEY_ESC || key == LV_KEY_BACKSPACE) {
+                survey_stage_ = SurveyStage::Sessions;
+                show_survey();
+            }
+        } else if (survey_stage_ == SurveyStage::Notice &&
+                   (key == LV_KEY_ENTER || key == LV_KEY_ESC || key == LV_KEY_BACKSPACE)) {
+            survey_stage_ = SurveyStage::Home;
+            show_survey();
+        }
+        return true;
+    }
+
+    void start_wifi_scan(bool channel_survey = false) {
+        if (wifi_task_ || surveillance_task_) {
             toast_->show("Previous Wi-Fi scan is stopping",
                          view::widgets::ToastTone::Warning, 3200);
             return;
         }
+        wifi_channel_survey_active_ = channel_survey;
         auto task = std::make_shared<WifiTask>();
         wifi_task_ = task;
         wifi_active_ = true;
@@ -1187,7 +4189,13 @@ private:
             wifi_scanning_ = false;
             wifi_result_ = {};
             wifi_result_.error = "Could not start scan: " + error.code().message();
-            show_wifi();
+            if (wifi_monitor_active_) {
+                show_wifi_monitor();
+            } else if (wifi_channel_survey_active_) {
+                show_wifi_channel_survey();
+            } else {
+                show_wifi();
+            }
         }
     }
 
@@ -1209,10 +4217,35 @@ private:
         }
         message += wifi_result_.networks.empty()
             ? "\nENTER rescan  ESC back"
-            : "\nUP/DOWN select  ENTER connect\nR rescan  ESC back";
+            : "\nUP/DOWN  ENTER connect\nH advice  R rescan  ESC";
         toast_->show_persistent(message, wifi_result_.error.empty()
                                              ? view::widgets::ToastTone::Default
                                              : view::widgets::ToastTone::Warning);
+    }
+
+    void show_wifi_monitor() {
+        std::string message;
+        if (!wifi_result_.error.empty()) {
+            message = "AP monitor error\n" + wifi_result_.error + "\nR retry";
+        } else if (!wifi_monitor_has_baseline_ && !wifi_monitor_comparison_.error.empty()) {
+            message = "AP baseline unavailable\n" + wifi_monitor_comparison_.error;
+        } else if (!wifi_monitor_has_baseline_) {
+            message = "No fresh AP baseline\nR retries; results may be limited";
+        } else if (!wifi_monitor_compared_) {
+            message = "AP baseline: " + std::to_string(wifi_monitor_comparison_.baseline_count) +
+                      "\nR compares another scan";
+        } else if (!wifi_monitor_comparison_.error.empty()) {
+            message = "Comparison unavailable\n" + wifi_monitor_comparison_.error + "\nR retry";
+        } else {
+            message = "AP changes (unverified)\nNew " +
+                      std::to_string(wifi_monitor_comparison_.new_addresses) +
+                      "  changed " + std::to_string(wifi_monitor_comparison_.changed) +
+                      "\nNot seen " + std::to_string(wifi_monitor_comparison_.not_seen) +
+                      " (unknown)\nD details  R rescan";
+        }
+        message += "\nLimited scan; no deauth  ESC";
+        toast_->show_persistent(message, wifi_result_.error.empty()
+            ? view::widgets::ToastTone::Default : view::widgets::ToastTone::Warning);
     }
 
     void update_wifi() {
@@ -1239,12 +4272,91 @@ private:
         if (task->cancelled) return;
         wifi_result_ = std::move(task->result);
         wifi_selection_ = 0;
-        show_wifi();
+        if (wifi_monitor_active_) {
+            if (wifi_result_.error.empty()) {
+                if (!wifi_monitor_has_baseline_) {
+                    wifi_monitor_comparison_ =
+                        platform::compare_wifi_observations(wifi_result_, wifi_result_);
+                    if (wifi_monitor_comparison_.error.empty() &&
+                        wifi_monitor_comparison_.baseline_count > 0) {
+                        wifi_monitor_baseline_ = wifi_result_;
+                        wifi_monitor_has_baseline_ = true;
+                    }
+                } else {
+                    wifi_monitor_comparison_ =
+                        platform::compare_wifi_observations(wifi_monitor_baseline_, wifi_result_);
+                    wifi_monitor_compared_ = true;
+                }
+            }
+            show_wifi_monitor();
+        } else if (wifi_channel_survey_active_) {
+            show_wifi_channel_survey();
+        } else {
+            show_wifi();
+        }
     }
 
     bool handle_wifi_key(uint32_t key, bool long_pressed) {
         if (long_pressed) return true;
+        if (wifi_monitor_active_) {
+            if (wifi_monitor_details_) {
+                const auto pages = std::max<std::size_t>(1, (wifi_monitor_detail_.size() + 89) / 90);
+                if (key == LV_KEY_ESC || key == LV_KEY_ENTER) {
+                    wifi_monitor_details_ = false;
+                    show_wifi_monitor();
+                } else if ((key == LV_KEY_LEFT || key == 'z') && wifi_monitor_page_ > 0) {
+                    --wifi_monitor_page_;
+                } else if ((key == LV_KEY_RIGHT || key == 'c') && wifi_monitor_page_ + 1 < pages) {
+                    ++wifi_monitor_page_;
+                } else return true;
+                if (wifi_monitor_details_)
+                    toast_->show_persistent("AP details " + std::to_string(wifi_monitor_page_ + 1) +
+                        "/" + std::to_string(pages) + "\n" +
+                        wifi_monitor_detail_.substr(wifi_monitor_page_ * 90, 90) +
+                        "\nLEFT/RIGHT  ESC");
+            } else if (key == LV_KEY_ESC || key == LV_KEY_BACKSPACE) {
+                if (wifi_task_) wifi_task_->cancelled = true;
+                wifi_monitor_active_ = false;
+                wifi_active_ = false;
+                toast_->hide();
+            } else if (!wifi_scanning_ && (key == 'r' || key == 'R')) {
+                start_wifi_scan();
+            } else if (!wifi_scanning_ && wifi_monitor_compared_ && wifi_result_.error.empty() &&
+                       wifi_monitor_comparison_.error.empty() && (key == 'd' || key == 'D')) {
+                wifi_monitor_detail_ = "Observations can be stale, spoofed, or incomplete. ";
+                for (const auto& detail : wifi_monitor_comparison_.details)
+                    wifi_monitor_detail_ += detail + ". ";
+                wifi_monitor_detail_ += "Skipped stale, ambiguous, or duplicate entries: " +
+                                        std::to_string(wifi_monitor_comparison_.skipped) +
+                                        ". Scans may be limited to 40 APs.";
+                wifi_monitor_details_ = true;
+                wifi_monitor_page_ = 0;
+                toast_->show_persistent("AP details 1/" +
+                    std::to_string((wifi_monitor_detail_.size() + 89) / 90) + "\n" +
+                    wifi_monitor_detail_.substr(0, 90) + "\nLEFT/RIGHT  ESC");
+            }
+            return true;
+        }
+        if (wifi_channel_survey_active_) {
+            if (key == LV_KEY_ESC || key == LV_KEY_BACKSPACE) {
+                if (wifi_task_) wifi_task_->cancelled = true;
+                wifi_active_ = false;
+                wifi_channel_survey_active_ = false;
+                toast_->hide();
+            } else if (!wifi_scanning_ &&
+                       (key == LV_KEY_ENTER || key == 'r' || key == 'R')) {
+                start_wifi_scan(true);
+            }
+            return true;
+        }
         if (wifi_stage_ == WifiStage::Connecting) return true;
+        if (wifi_stage_ == WifiStage::SecurityAdvice) {
+            if (key == LV_KEY_ENTER || key == LV_KEY_ESC || key == LV_KEY_BACKSPACE) {
+                wifi_stage_ = WifiStage::Results;
+                show_wifi();
+            }
+            return true;
+        }
         if (wifi_stage_ == WifiStage::Notice) {
             if (key == LV_KEY_ENTER || key == LV_KEY_ESC) {
                 wifi_stage_ = WifiStage::Results;
@@ -1326,6 +4438,11 @@ private:
             } else if ((key == 'r' || key == 'R') ||
                        (key == LV_KEY_ENTER && wifi_result_.networks.empty())) {
                 start_wifi_scan();
+            } else if ((key == 'h' || key == 'H') && !wifi_result_.networks.empty() &&
+                       wifi_result_.error.empty()) {
+                wifi_stage_ = WifiStage::SecurityAdvice;
+                toast_->show_persistent(platform::wifi_hardening_advice(wifi_result_.networks[wifi_selection_]) +
+                    "\nAdvertised, not verified\nOnly change your own AP\nENTER/ESC back");
             } else if (key == LV_KEY_ENTER && !wifi_result_.networks.empty()) {
                 wifi_stage_ = WifiStage::ChooseConnection;
                 toast_->show_persistent("Connect to " + wifi_result_.networks[wifi_selection_].name +
@@ -1384,17 +4501,19 @@ private:
         }
     }
 
-    void start_gatt_scan() {
-        if (gatt_task_) {
+    void start_gatt_scan(bool tracker_mode = false) {
+        if (gatt_task_ || surveillance_task_) {
             toast_->show("Previous Bluetooth operation is stopping",
                          view::widgets::ToastTone::Warning, 3200);
             return;
         }
+        gatt_tracker_mode_ = tracker_mode;
         auto task = std::make_shared<GattTask>();
         task->scan = true;
         gatt_task_ = task;
         gatt_stage_ = GattStage::Scanning;
-        toast_->show_persistent("Scanning nearby BLE devices...\nESC cancels");
+        toast_->show_persistent(tracker_mode ? "Scanning BLE tracker hints...\nESC cancels"
+                                           : "Scanning nearby BLE devices...\nESC cancels");
         try {
             gatt_thread_ = std::thread([task] {
                 platform::BluetoothScanResult result;
@@ -1448,12 +4567,18 @@ private:
 
     void show_gatt() {
         std::string message;
-        if (gatt_stage_ == GattStage::Devices && !gatt_devices_.empty()) {
+        if (gatt_stage_ == GattStage::ConfirmTracker) {
+            message = "BLE scan may transmit.\nFCB2 hints only; unverified.\n"
+                      "ENTER scan  ESC cancel";
+        } else if (gatt_stage_ == GattStage::Devices && !gatt_devices_.empty()) {
             const auto& device = gatt_devices_[gatt_device_index_];
-            message = "BLE " + std::to_string(gatt_device_index_ + 1) + "/" +
+            message = std::string(gatt_tracker_mode_ ? "FCB2 unverified " : "BLE ") +
+                      std::to_string(gatt_device_index_ + 1) + "/" +
                       std::to_string(gatt_devices_.size()) + "\n" +
                       (device.name.empty() ? "Unnamed device" : device.name) + "\n" +
-                      device.address + "\nUP/DOWN select  ENTER open\nESC back";
+                      device.address +
+                      (gatt_tracker_mode_ ? "\nUP/DOWN  R rescan  ESC"
+                                          : "\nUP/DOWN select  ENTER open\nESC back");
         } else if (gatt_stage_ == GattStage::Entries && !gatt_entries_.empty()) {
             const auto& entry = gatt_entries_[gatt_entry_index_];
             message = std::string(entry.characteristic ? "Characteristic " : "Service ") +
@@ -1461,7 +4586,9 @@ private:
                       std::to_string(gatt_entries_.size()) + "\n" + entry.uuid +
                       "\nUP/DOWN browse  ESC back";
         } else if (gatt_stage_ == GattStage::Empty) {
-            message = gatt_devices_.empty()
+            message = gatt_tracker_mode_
+                          ? "No FCB2 hints found\nNot proof no trackers\nENTER rescan  ESC back"
+                          : gatt_devices_.empty()
                           ? "No BLE devices found\nMake the device advertise\nENTER rescan  ESC back"
                           : "No GATT services found\nESC back";
         } else if (gatt_stage_ == GattStage::Error) {
@@ -1500,7 +4627,9 @@ private:
         }
         if (task->scan) {
             gatt_error_ = task->scan_result.error;
-            gatt_devices_ = std::move(task->scan_result.devices);
+            gatt_devices_ = gatt_tracker_mode_
+                ? platform::tracker_indicator_devices(std::move(task->scan_result.devices))
+                : std::move(task->scan_result.devices);
             gatt_device_index_ = 0;
             gatt_stage_ = !gatt_error_.empty() ? GattStage::Error
                           : gatt_devices_.empty() ? GattStage::Empty
@@ -1518,6 +4647,15 @@ private:
 
     bool handle_gatt_key(uint32_t key, bool long_pressed) {
         if (long_pressed) {
+            return true;
+        }
+        if (gatt_stage_ == GattStage::ConfirmTracker) {
+            if (key == LV_KEY_ENTER) {
+                start_gatt_scan(true);
+            } else if (key == LV_KEY_ESC || key == LV_KEY_BACKSPACE) {
+                gatt_stage_ = GattStage::None;
+                toast_->hide();
+            }
             return true;
         }
         if (key == LV_KEY_ESC || key == LV_KEY_BACKSPACE) {
@@ -1554,12 +4692,16 @@ private:
                 }
                 show_gatt();
             }
+        } else if (gatt_tracker_mode_ && (key == 'r' || key == 'R') &&
+                   (gatt_stage_ == GattStage::Devices || gatt_stage_ == GattStage::Empty ||
+                    gatt_stage_ == GattStage::Error)) {
+            start_gatt_scan(true);
         } else if (key == LV_KEY_ENTER) {
             if (gatt_stage_ == GattStage::Devices) {
-                start_gatt_browse();
+                if (!gatt_tracker_mode_) start_gatt_browse();
             } else if (gatt_stage_ == GattStage::Error ||
                        (gatt_stage_ == GattStage::Empty && gatt_devices_.empty())) {
-                start_gatt_scan();
+                start_gatt_scan(gatt_tracker_mode_);
             }
         }
         return true;
@@ -1584,8 +4726,14 @@ private:
             }
             message += "\nEnter=run  Esc=cancel";
         }
+        else if (text_tool_mode_ == TextToolMode::Adsb) {
+            message += "ADS-B DF17 hex (28 digits)\n";
+            message += text_tool_buffer_.empty() ? "_" : text_tool_buffer_;
+            message += "\nENTER decode  ESC cancel";
+        }
         else {
-            message += text_tool_mode_ == TextToolMode::Ping ? "Ping host: " : "DNS name: ";
+            message += text_tool_mode_ == TextToolMode::Ping ? "Ping host: "
+                       : text_tool_mode_ == TextToolMode::Https ? "HTTPS host: " : "DNS name: ";
             message += text_tool_buffer_.empty() ? "_" : text_tool_buffer_;
             message += "\nEnter=run  Esc=cancel";
         }
@@ -1594,12 +4742,14 @@ private:
 
     void start_text_tool(TextToolMode mode) {
         text_tool_mode_ = mode;
+        https_confirm_ = false;
         text_tool_buffer_.clear();
         show_text_tool_prompt();
     }
 
     void cancel_text_tool() {
         text_tool_mode_ = TextToolMode::None;
+        https_confirm_ = false;
         text_tool_buffer_.clear();
         toast_->hide();
     }
@@ -1684,6 +4834,205 @@ private:
         return result;
     }
 
+    void show_expansion_inventory() {
+        const auto inventory = platform::read_expansion_bus_inventory();
+        std::string message = "EXT bus nodes (read-only)";
+        if (!inventory.error.empty()) {
+            message += "\n" + file_display_text(inventory.error, 38);
+        } else {
+            const auto summarize = [](const std::vector<std::string>& nodes) {
+                if (nodes.empty()) {
+                    return std::string("none");
+                }
+                std::string summary = std::filesystem::path(nodes.front()).filename().string();
+                if (nodes.size() > 1) {
+                    summary += " +" + std::to_string(nodes.size() - 1);
+                }
+                return summary;
+            };
+            message += "\nSPI: " + summarize(inventory.spi_nodes);
+            message += "\nGPIO: " + summarize(inventory.gpio_chips);
+            message += "\nNodes only; hats not identified";
+        }
+        toast_->show(message, inventory.error.empty()
+                                  ? view::widgets::ToastTone::Default
+                                  : view::widgets::ToastTone::Warning,
+                     5200);
+    }
+
+    void show_cap_nfc_readiness() {
+        const auto probe = platform::read_cap_nfc_identity();
+        if (!probe.detected) {
+            const std::string detail = probe.error.empty()
+                                           ? "No valid chip identity"
+                                           : file_display_text(probe.error, 38);
+            toast_->show("NFC readiness unavailable\n" + detail,
+                         view::widgets::ToastTone::Warning,
+                         5200);
+            return;
+        }
+
+        char identity[5]{};
+        std::snprintf(identity, sizeof(identity), "0x%02X", probe.identity.value);
+        toast_->show("ST25R3916 detected\nIdentity " + std::string(identity) +
+                         " / Rev " + std::to_string(probe.identity.revision) +
+                         "\nNo RF or card scan",
+                     view::widgets::ToastTone::Success,
+                     5200);
+    }
+
+    static std::string script_line(const std::string& text, std::size_t offset) {
+        std::string line;
+        const auto end = std::min(text.size(), offset + 6);
+        for (auto index = offset; index < end; ++index) {
+            const auto ch = static_cast<unsigned char>(text[index]);
+            if (ch == '#') line += "\\x23";
+            else if (ch == '\\') line += "\\\\";
+            else if (ch == '\n') line += "\\n";
+            else if (ch == '\r') line += "\\r";
+            else if (ch == '\t') line += "\\t";
+            else line += ch >= 32 && ch < 127 ? static_cast<char>(ch) : '?';
+        }
+        return line;
+    }
+
+    void show_script_page() {
+        const bool preview = script_stage_ == ScriptStage::Preview;
+        const auto& text = preview ? script_.text : script_output_;
+        const std::size_t pages = std::max<std::size_t>(1, (text.size() + 11) / 12);
+        const auto offset = script_page_ * 12;
+        std::string message = preview ? "Script preview " : "Script result ";
+        message += std::to_string(script_page_ + 1) + "/" + std::to_string(pages);
+        message += "\n" + script_line(text, offset) + "\n" + script_line(text, offset + 6);
+        message += preview ? "\nN/P pages  ENTER review\nESC back"
+                           : "\nN/P pages  ESC back";
+        toast_->show_persistent(message);
+    }
+
+    void start_script_load(const std::string& filename) {
+        if (script_task_) return;
+        auto task = std::make_shared<ScriptTask>();
+        task->loading = true;
+        script_task_ = task;
+        script_stage_ = ScriptStage::Loading;
+        const auto directory = file_directory_;
+        toast_->show_persistent("Reading script...\nESC cancels");
+        try {
+            script_thread_ = std::thread([task, directory, filename] {
+                try {
+                    task->script = platform::read_local_script(directory, filename);
+                } catch (const std::exception& error) {
+                    task->script.error = std::string("Script read failed: ") + error.what();
+                }
+                task->complete = true;
+            });
+        } catch (const std::system_error& error) {
+            script_task_.reset();
+            script_stage_ = ScriptStage::None;
+            file_notice_ = "Cannot start script read: " + error.code().message();
+            show_file_browser();
+        }
+    }
+
+    void start_script_run() {
+        auto task = std::make_shared<ScriptTask>();
+        task->script = script_;
+        script_task_ = task;
+        script_stage_ = ScriptStage::Running;
+        toast_->show_persistent("Running local script...\nESC requests stop\nTimeout: 60 seconds");
+        try {
+            script_thread_ = std::thread([task] {
+                try {
+                    task->result = platform::run_local_script(task->script, task->cancelled);
+                } catch (const std::exception& error) {
+                    task->result.error = std::string("Script failed: ") + error.what();
+                }
+                task->complete = true;
+            });
+        } catch (const std::system_error& error) {
+            script_task_.reset();
+            script_stage_ = ScriptStage::None;
+            file_notice_ = "Cannot start script: " + error.code().message();
+            show_file_browser();
+        }
+    }
+
+    void update_script() {
+        const auto task = script_task_;
+        if (!task || !task->complete) return;
+        if (script_thread_.joinable()) script_thread_.join();
+        script_task_.reset();
+        if (task->cancelled && task->loading) {
+            script_stage_ = ScriptStage::None;
+            show_file_browser();
+            return;
+        }
+        if (task->loading) {
+            if (!task->script.error.empty()) {
+                script_stage_ = ScriptStage::None;
+                file_notice_ = task->script.error;
+                show_file_browser();
+                return;
+            }
+            script_ = std::move(task->script);
+            script_stage_ = ScriptStage::Preview;
+        } else {
+            script_output_ = task->result.error.empty()
+                ? "Exit " + std::to_string(task->result.exit_code)
+                : task->result.error;
+            script_output_ += "\n" + task->result.output;
+            if (task->result.truncated) script_output_ += "\n[output truncated]";
+            script_stage_ = ScriptStage::Result;
+        }
+        script_page_ = 0;
+        show_script_page();
+    }
+
+    bool handle_script_key(uint32_t key, bool long_pressed) {
+        if (long_pressed) return true;
+        if (script_stage_ == ScriptStage::Loading || script_stage_ == ScriptStage::Running) {
+            if (key == LV_KEY_ESC && script_task_) {
+                script_task_->cancelled = true;
+                toast_->show_persistent("Stopping...\nPlease wait");
+            }
+            return true;
+        }
+        if (key == LV_KEY_ESC) {
+            if (script_stage_ == ScriptStage::Confirm) {
+                script_stage_ = ScriptStage::Preview;
+                show_script_page();
+            } else {
+                script_stage_ = ScriptStage::None;
+                script_ = {};
+                show_file_browser();
+            }
+            return true;
+        }
+        if (script_stage_ == ScriptStage::Confirm) {
+            if (key == LV_KEY_ENTER) start_script_run();
+            return true;
+        }
+        const auto& text = script_stage_ == ScriptStage::Preview ? script_.text : script_output_;
+        const std::size_t pages = std::max<std::size_t>(1, (text.size() + 11) / 12);
+        if ((key == 'n' || key == 'N' || key == LV_KEY_DOWN) && script_page_ + 1 < pages)
+            ++script_page_;
+        else if ((key == 'p' || key == 'P' || key == LV_KEY_UP) && script_page_ > 0)
+            --script_page_;
+        else if (key == LV_KEY_ENTER && script_stage_ == ScriptStage::Preview) {
+            if (script_page_ + 1 != pages) {
+                toast_->show_persistent("Review all pages first\nN next  ESC back",
+                                        view::widgets::ToastTone::Warning);
+                return true;
+            }
+            script_stage_ = ScriptStage::Confirm;
+            toast_->show_persistent("Run trusted local script?\nApp-user access; no sandbox\nFiles/network may change\nENTER run  ESC back",
+                                    view::widgets::ToastTone::Warning);
+            return true;
+        }
+        show_script_page();
+        return true;
+    }
+
     void show_file_browser() {
         if (file_mode_ == FileMode::I2c) {
             std::string message = "I2C buses (read-only)";
@@ -1708,7 +5057,8 @@ private:
         }
         const char* title = file_mode_ == FileMode::Gallery ? "Gallery: "
                             : file_mode_ == FileMode::AlbumArt ? "Album art: "
-                            : file_mode_ == FileMode::Music ? "Music: " : "Files: ";
+                            : file_mode_ == FileMode::Music ? "Music: "
+                            : file_mode_ == FileMode::Scripts ? "Scripts: " : "Files: ";
         std::string message = std::string(title) +
                               file_display_text(folder, 20);
         if (!file_notice_.empty()) {
@@ -1731,8 +5081,10 @@ private:
         message += file_mode_ == FileMode::Gallery ? "\nUP/DOWN select  ENTER view\n"
                    : file_mode_ == FileMode::AlbumArt ? "\nSelect track  ENTER cover\n"
                    : file_mode_ == FileMode::Music ? "\nUP/DOWN select  ENTER play\n"
+                   : file_mode_ == FileMode::Files ? "\nENTER open  H hash file\n"
                                                   : "\nUP/DOWN select  ENTER open\n";
-        message += "P/N page  BACK up  ESC exit";
+        message += file_mode_ == FileMode::Scripts ? "P/N page  ESC exit"
+                                                  : "P/N page  BACK up  ESC exit";
         toast_->show_persistent(message, file_notice_.empty()
                                              ? view::widgets::ToastTone::Default
                                              : view::widgets::ToastTone::Warning);
@@ -1751,13 +5103,18 @@ private:
         auto task = std::make_shared<FileQueryState>();
         task->directory = directory;
         task->offset = offset;
+        task->create_directory = file_mode_ == FileMode::Scripts;
         file_task_ = task;
         try {
             file_thread_ = std::thread([task] {
                 platform::DirectoryResult result;
                 try {
-                    result = platform::read_directory(task->directory.u8string(),
-                                                      task->offset, &task->cancelled);
+                    std::error_code error;
+                    if (task->create_directory)
+                        std::filesystem::create_directories(task->directory, error);
+                    if (error) result.error = "Cannot create scripts folder: " + error.message();
+                    else result = platform::read_directory(task->directory.u8string(),
+                                                           task->offset, &task->cancelled);
                 } catch (const std::exception& error) {
                     result.error = std::string("Directory read failed: ") + error.what();
                 }
@@ -1818,6 +5175,40 @@ private:
         show_file_browser();
     }
 
+    void start_file_hash(const std::filesystem::path& path) {
+        auto task = std::make_shared<FileHashTask>();
+        file_hash_task_ = task;
+        try {
+            file_hash_thread_ = std::thread([task, path] {
+                task->result = platform::hash_local_file(path, task->cancelled);
+                task->complete = true;
+            });
+        } catch (const std::system_error& error) {
+            file_hash_task_.reset();
+            file_notice_ = "Cannot start hash: " + error.code().message();
+            show_file_browser();
+            return;
+        }
+        toast_->show_persistent("Hashing file (max 10 MiB)\nESC cancels");
+    }
+
+    void update_file_hash() {
+        const auto task = file_hash_task_;
+        if (!task || !task->complete) return;
+        if (file_hash_thread_.joinable()) file_hash_thread_.join();
+        file_hash_task_.reset();
+        if (!file_browser_active_) return;
+        if (task->cancelled || !task->result.error.empty()) {
+            file_notice_ = task->cancelled ? "Hash cancelled" : task->result.error;
+            show_file_browser();
+            return;
+        }
+        file_hash_showing_ = true;
+        const auto& digest = task->result.sha256;
+        toast_->show_persistent("SHA-256\n" + digest.substr(0, 32) + "\n" +
+                                digest.substr(32) + "\nNot proof of authenticity\nENTER/ESC back");
+    }
+
     void start_file_browser(FileMode mode = FileMode::Files) {
         if (mode == FileMode::I2c) {
 #if USE_DESKTOP
@@ -1829,6 +5220,13 @@ private:
 #endif
             return;
         }
+#if USE_DESKTOP
+        if (mode == FileMode::Scripts) {
+            toast_->show("Local scripts are unavailable\nin the desktop simulator",
+                         view::widgets::ToastTone::Warning, 4200);
+            return;
+        }
+#endif
 #if USE_DESKTOP && defined(_WIN32)
         const wchar_t* home = _wgetenv(L"HOME");
 #else
@@ -1849,7 +5247,9 @@ private:
 #if USE_DESKTOP && defined(_WIN32)
             open_file_directory(std::filesystem::path(home));
 #else
-            open_file_directory(std::filesystem::u8path(home));
+            auto directory = std::filesystem::u8path(home);
+            if (mode == FileMode::Scripts) directory /= "poseidon-scripts";
+            open_file_directory(directory);
 #endif
         } catch (const std::filesystem::filesystem_error& error) {
             toast_->show("Files\nInvalid home path: " + std::string(error.what()),
@@ -1864,6 +5264,20 @@ private:
         if (long_pressed) {
             return true;
         }
+        if (file_hash_task_) {
+            if (key == LV_KEY_ESC) {
+                file_hash_task_->cancelled = true;
+                toast_->show_persistent("Cancelling hash...");
+            }
+            return true;
+        }
+        if (file_hash_showing_) {
+            if (key == LV_KEY_ESC || key == LV_KEY_ENTER) {
+                file_hash_showing_ = false;
+                show_file_browser();
+            }
+            return true;
+        }
         if (key == LV_KEY_ESC) {
             file_browser_active_ = false;
             if (file_task_) {
@@ -1875,8 +5289,19 @@ private:
         if (file_task_) {
             return true;
         }
+        if ((key == 'h' || key == 'H') && file_mode_ == FileMode::Files &&
+            !file_entries_.empty()) {
+            const auto& entry = file_entries_[file_selection_];
+            if (entry.directory) {
+                file_notice_ = "Select a regular file";
+                show_file_browser();
+            } else {
+                start_file_hash(file_directory_ / std::filesystem::u8path(entry.name));
+            }
+            return true;
+        }
         if (key == LV_KEY_BACKSPACE || key == LV_KEY_DEL) {
-            if (file_mode_ == FileMode::I2c) return true;
+            if (file_mode_ == FileMode::I2c || file_mode_ == FileMode::Scripts) return true;
             const auto parent = file_directory_.parent_path();
             if (!parent.empty() && parent != file_directory_) {
                 open_file_directory(parent);
@@ -1905,7 +5330,14 @@ private:
             if (file_mode_ == FileMode::I2c) return true;
             const auto& entry = file_entries_[file_selection_];
             const auto path = file_directory_ / std::filesystem::u8path(entry.name);
-            if (entry.directory) {
+            if (file_mode_ == FileMode::Scripts) {
+                if (entry.directory) {
+                    file_notice_ = "Select a .sh or .py file";
+                    show_file_browser();
+                } else {
+                    start_script_load(entry.name);
+                }
+            } else if (entry.directory) {
                 open_file_directory(path);
             } else if (file_mode_ == FileMode::Gallery) {
                 start_gallery_image(path);
@@ -2128,7 +5560,14 @@ private:
         }
         gallery_loading_ = false;
         if (!task->result.error.empty()) {
-            if (task->camera) {
+            if (task->survey_map) {
+                survey_notice_ = "Map " + std::to_string(task->map_tile.zoom) + "/" +
+                                 std::to_string(task->map_tile.x) + "/" +
+                                 std::to_string(task->map_tile.y) + "\n" +
+                                 file_display_text(task->result.error, 80);
+                survey_stage_ = SurveyStage::MapNotice;
+                show_survey();
+            } else if (task->camera) {
                 toast_->show("Camera: " + task->result.error,
                              view::widgets::ToastTone::Error, 5000);
             } else {
@@ -2148,10 +5587,14 @@ private:
         gallery_image_.header.stride = task->result.width * 4U;
         gallery_image_.data_size = static_cast<uint32_t>(gallery_pixels_.size());
         gallery_image_.data = gallery_pixels_.data();
-        visual_tool_mode_ = VisualToolMode::Gallery;
+        visual_tool_mode_ = task->survey_map ? VisualToolMode::SurveyMap : VisualToolMode::Gallery;
         if (!create_visual_overlay()) {
             close_visual_tool();
-            if (task->camera) {
+            if (task->survey_map) {
+                survey_notice_ = "Could not open offline map";
+                survey_stage_ = SurveyStage::MapNotice;
+                show_survey();
+            } else if (task->camera) {
                 toast_->show("Could not open image viewer", view::widgets::ToastTone::Error, 4200);
             } else {
                 file_notice_ = "Could not open image viewer";
@@ -2163,7 +5606,11 @@ private:
         auto* image = lv_image_create(overlay_);
         if (!image) {
             close_visual_tool();
-            if (task->camera) {
+            if (task->survey_map) {
+                survey_notice_ = "Could not create map image";
+                survey_stage_ = SurveyStage::MapNotice;
+                show_survey();
+            } else if (task->camera) {
                 toast_->show("Could not create image viewer", view::widgets::ToastTone::Error, 4200);
             } else {
                 file_notice_ = "Could not create image viewer";
@@ -2172,6 +5619,60 @@ private:
             return;
         }
         lv_image_set_src(image, &gallery_image_);
+        if (task->survey_map) {
+            const lv_font_t* font = assets_.load_standard_font(10);
+            if (!font) font = &lv_font_montserrat_10;
+            for (const auto codepoint : task->map_attribution_glyphs) {
+                lv_font_glyph_dsc_t glyph{};
+                if (!lv_font_get_glyph_dsc(font, &glyph, codepoint, 0) || glyph.is_placeholder) {
+                    close_visual_tool();
+                    survey_notice_ = "Attribution font missing a glyph";
+                    survey_stage_ = SurveyStage::MapNotice;
+                    show_survey();
+                    return;
+                }
+            }
+            auto* marker = lv_obj_create(overlay_);
+            if (!marker) {
+                close_visual_tool();
+                survey_notice_ = "Could not create map marker";
+                survey_stage_ = SurveyStage::MapNotice;
+                show_survey();
+                return;
+            }
+            lv_obj_set_style_bg_color(overlay_, lv_color_black(), 0);
+            lv_image_set_pivot(image, 0, 0);
+            lv_image_set_scale(image, 128);
+            lv_obj_set_pos(image, 5, 21);
+            lv_obj_remove_style_all(marker);
+            lv_obj_set_size(marker, 5, 5);
+            lv_obj_set_style_bg_opa(marker, LV_OPA_COVER, 0);
+            lv_obj_set_style_bg_color(marker, lv_color_hex(0xff0000), 0);
+            lv_obj_set_pos(marker,
+                           5 + std::clamp(static_cast<int>(task->map_tile.pixel_x / 2) - 2, 0, 123),
+                           21 + std::clamp(static_cast<int>(task->map_tile.pixel_y / 2) - 2, 0, 123));
+            const std::string label = "Offline map z" + std::to_string(task->map_tile.zoom) +
+                                      "\nReceiver GPS; map unverified\n" + task->map_attribution +
+                                      "\nZ/C zoom  ESC back";
+            lv_label_set_text(screen_test_label_, label.c_str());
+            lv_obj_set_style_text_color(screen_test_label_, lv_color_white(), 0);
+            lv_obj_set_style_text_font(screen_test_label_, font, 0);
+            lv_obj_set_width(screen_test_label_, 175);
+            lv_label_set_long_mode(screen_test_label_, LV_LABEL_LONG_WRAP);
+            lv_obj_align(screen_test_label_, LV_ALIGN_RIGHT_MID, -4, 0);
+            lv_obj_update_layout(overlay_);
+            if (lv_obj_get_height(screen_test_label_) > 160) {
+                close_visual_tool();
+                survey_notice_ = "Attribution does not fit screen";
+                survey_stage_ = SurveyStage::MapNotice;
+                show_survey();
+                return;
+            }
+            lv_obj_move_foreground(marker);
+            lv_obj_move_foreground(screen_test_label_);
+            survey_map_zoom_ = task->map_tile.zoom;
+            return;
+        }
         const uint32_t scale = std::min({256U,
                                          320U * 256U / task->result.width,
                                          150U * 256U / task->result.height});
@@ -2183,7 +5684,7 @@ private:
         lv_obj_move_foreground(screen_test_label_);
     }
 
-    void start_network_query(const std::string& host, bool dns) {
+    void start_network_query(const std::string& host, bool dns, bool https = false) {
         if (network_query_) {
             toast_->show("A network check is already running",
                          view::widgets::ToastTone::Warning,
@@ -2194,20 +5695,33 @@ private:
         auto state = std::make_shared<NetworkQueryState>();
         state->host = host;
         state->dns = dns;
+        state->https = https;
         network_query_ = state;
-        toast_->show_persistent(dns ? "Resolving hostname..." : "Checking host...");
+        toast_->show_persistent(https ? "Checking HTTPS trust...\nTimeout: 10 seconds"
+                                     : dns ? "Resolving hostname..." : "Checking host...");
         try {
             network_thread_ = std::thread([state] {
                 std::string output;
+                bool succeeded = false;
                 try {
-                    output = state->dns ? platform::dns_lookup(state->host)
-                                        : platform::ping_host(state->host);
+                    if (state->https) {
+                        auto result = platform::check_https_certificate(state->host);
+                        succeeded = result.verified;
+                        output = std::move(result.detail);
+                    } else if (state->dns) {
+                        auto result = platform::dns_lookup(state->host);
+                        succeeded = result.error.empty();
+                        output = succeeded ? std::move(result.output) : std::move(result.error);
+                    } else {
+                        output = platform::ping_host(state->host);
+                    }
                 }
                 catch (const std::exception& error) {
                     output = std::string("Network check failed: ") + error.what();
                 }
                 std::lock_guard<std::mutex> lock(state->mutex);
                 state->result = output;
+                state->connected = succeeded;
                 state->complete = true;
             });
         }
@@ -2216,6 +5730,36 @@ private:
             toast_->show("Could not start network check: " + error.code().message(),
                          view::widgets::ToastTone::Error,
                          4200);
+        }
+    }
+
+    void start_internet_check() {
+        if (network_query_) {
+            toast_->show("A network check is already running",
+                         view::widgets::ToastTone::Warning, 3200);
+            return;
+        }
+        auto state = std::make_shared<NetworkQueryState>();
+        state->internet = true;
+        network_query_ = state;
+        toast_->show_persistent("Checking Cloudflare HTTPS...\nTimeout: 10 seconds");
+        try {
+            network_thread_ = std::thread([state] {
+                platform::InternetCheckResult result;
+                try {
+                    result = platform::check_internet();
+                } catch (const std::exception& error) {
+                    result.detail = std::string("Internet check failed: ") + error.what();
+                }
+                std::lock_guard<std::mutex> lock(state->mutex);
+                state->connected = result.connected;
+                state->result = std::move(result.detail);
+                state->complete = true;
+            });
+        } catch (const std::system_error& error) {
+            network_query_.reset();
+            toast_->show("Could not start internet check: " + error.code().message(),
+                         view::widgets::ToastTone::Error, 4200);
         }
     }
 
@@ -2238,6 +5782,21 @@ private:
         }
         network_query_.reset();
 
+        if (state->https) {
+            toast_->show("HTTPS trust\n" + (result.empty() ? "No result" : result),
+                         state->connected ? view::widgets::ToastTone::Success
+                                          : view::widgets::ToastTone::Warning,
+                         5200);
+            return;
+        }
+        if (state->internet) {
+            toast_->show("Internet check\n" + (result.empty() ? "No result" : result),
+                         state->connected ? view::widgets::ToastTone::Success
+                                          : view::widgets::ToastTone::Warning,
+                         5200);
+            return;
+        }
+
         if (result.empty()) {
             toast_->show("Network check returned no result",
                          view::widgets::ToastTone::Warning,
@@ -2249,7 +5808,7 @@ private:
             result.find("disabled") == std::string::npos &&
             result.find("Invalid host") == std::string::npos &&
             result.find("Network check failed:") == std::string::npos &&
-            (state->dns ? result.find("getent:") == std::string::npos
+            (state->dns ? state->connected
                         : result.find("bytes from") != std::string::npos);
         std::size_t line_start = 0;
         if (!state->dns) {
@@ -2746,7 +6305,7 @@ private:
 
     void show_selected_interface() {
         const auto& item = interfaces_[interface_selection_];
-        std::string message = interfaces_ethernet_only_ ? "Host Ethernet "
+        std::string message = interfaces_ethernet_only_ ? (USE_DESKTOP ? "Host Ethernet " : "Ethernet ")
                               : USE_DESKTOP ? "Host interface " : "Interface ";
         message += std::to_string(interface_selection_ + 1) + "/" +
                    std::to_string(interfaces_.size());
@@ -2770,7 +6329,8 @@ private:
             interfaces = platform::filter_ethernet_interfaces(std::move(interfaces));
         }
         if (interfaces.interfaces.empty()) {
-            toast_->show(ethernet_only ? "No host Ethernet adapters found"
+            toast_->show(ethernet_only ? (USE_DESKTOP ? "No host Ethernet adapters found"
+                                                      : "No Ethernet adapter detected")
                                        : "No network interfaces found",
                          view::widgets::ToastTone::Warning, 3200);
             return;
@@ -2812,7 +6372,27 @@ private:
         message += "\n" + file_display_text(item.address, 24) +
                    "\n" + file_display_text(item.hardware_address, 24) +
                    "\n" + file_display_text(item.interface_name, 24) +
-                   "\nUP/DOWN select  ESC back";
+                   "\nUP/DOWN select Y compare ESC";
+        toast_->show_persistent(message);
+    }
+
+    void compare_selected_arp_entry() {
+        platform::ArpResult baseline;
+        baseline.entries = arp_entries_;
+        baseline.truncated = arp_truncated_;
+        const auto comparison = platform::compare_arp_entry(
+            baseline, arp_entries_[arp_selection_], platform::arp_entries());
+        std::string message = "Cached ARP comparison\n";
+        if (comparison.state == platform::ArpComparisonState::Same) {
+            message += "MAC unchanged in snapshots\nNot proof of safety";
+        } else if (comparison.state == platform::ArpComparisonState::Changed) {
+            message += "MAC changed: " + file_display_text(comparison.current_mac, 17) +
+                       "\nNot proof of an attack";
+        } else {
+            message += "Unknown: " + file_display_text(comparison.detail, 48);
+        }
+        message += "\nNo probes sent\nESC back";
+        arp_compare_active_ = true;
         toast_->show_persistent(message);
     }
 
@@ -2840,10 +6420,19 @@ private:
         if (long_pressed) {
             return true;
         }
+        if (arp_compare_active_) {
+            if (key == LV_KEY_ESC || key == LV_KEY_BACKSPACE) {
+                arp_compare_active_ = false;
+                show_selected_arp_entry();
+            }
+            return true;
+        }
         if (key == LV_KEY_ESC || key == LV_KEY_BACKSPACE) {
             arp_active_ = false;
             arp_entries_.clear();
             toast_->hide();
+        } else if (key == 'y' || key == 'Y') {
+            compare_selected_arp_entry();
         } else if (key == LV_KEY_UP || key == LV_KEY_LEFT || key == 'f' || key == 'z') {
             if (arp_selection_ > 0) {
                 --arp_selection_;
@@ -3040,12 +6629,69 @@ private:
         }
         overlay_ = nullptr;
         screen_test_label_ = nullptr;
-        if (visual_tool_mode_ == VisualToolMode::Gallery) {
+        if (visual_tool_mode_ == VisualToolMode::Gallery ||
+            visual_tool_mode_ == VisualToolMode::SurveyMap ||
+            visual_tool_mode_ == VisualToolMode::SurveyQr) {
             lv_image_cache_drop(&gallery_image_);
             gallery_pixels_.clear();
             camera_jpeg_.clear();
         }
         visual_tool_mode_ = VisualToolMode::None;
+    }
+
+    void show_survey_plot() {
+        const auto plot = platform::make_survey_plot(survey_timeline_);
+        if (!plot.error.empty() || plot.gps_rows == 0) {
+            toast_->show(plot.error.empty() ? "No receiver GPS in latest rows" : plot.error,
+                         view::widgets::ToastTone::Warning, 4200);
+            return;
+        }
+        visual_tool_mode_ = VisualToolMode::SurveyPlot;
+        if (!create_visual_overlay()) {
+            close_visual_tool();
+            toast_->show("Could not open GPS plot", view::widgets::ToastTone::Error, 4200);
+            return;
+        }
+        const auto colors = view::palette(view_model_.theme_id());
+        lv_obj_set_style_bg_color(overlay_, colors.background, 0);
+        const std::string title = "Receiver GPS " + std::to_string(plot.gps_rows) + " rows  N up";
+        lv_label_set_text(screen_test_label_, title.c_str());
+        lv_obj_set_style_text_color(screen_test_label_, colors.text, 0);
+        lv_obj_align(screen_test_label_, LV_ALIGN_TOP_MID, 0, 5);
+        auto* panel = lv_obj_create(overlay_);
+        auto* footer = lv_label_create(overlay_);
+        if (!panel || !footer) {
+            close_visual_tool();
+            toast_->show("Could not create GPS plot", view::widgets::ToastTone::Error, 4200);
+            return;
+        }
+        lv_obj_remove_style_all(panel);
+        lv_obj_clear_flag(panel, LV_OBJ_FLAG_SCROLLABLE);
+        lv_obj_set_size(panel, 296, 105);
+        lv_obj_align(panel, LV_ALIGN_TOP_MID, 0, 28);
+        lv_obj_set_style_bg_color(panel, colors.surface, 0);
+        lv_obj_set_style_bg_opa(panel, LV_OPA_COVER, 0);
+        for (std::size_t y = 0; y < platform::kSurveyPlotHeight; ++y) {
+            for (std::size_t x = 0; x < platform::kSurveyPlotWidth; ++x) {
+                if (!plot.cells[y * platform::kSurveyPlotWidth + x]) continue;
+                auto* dot = lv_obj_create(panel);
+                if (!dot) {
+                    close_visual_tool();
+                    toast_->show("Could not draw GPS plot", view::widgets::ToastTone::Error, 4200);
+                    return;
+                }
+                lv_obj_remove_style_all(dot);
+                lv_obj_set_size(dot, 6, 6);
+                lv_obj_set_pos(dot, static_cast<int32_t>(12 + x * 14),
+                               static_cast<int32_t>(11 + y * 11));
+                lv_obj_set_style_radius(dot, LV_RADIUS_CIRCLE, 0);
+                lv_obj_set_style_bg_color(dot, colors.primary, 0);
+                lv_obj_set_style_bg_opa(dot, LV_OPA_COVER, 0);
+            }
+        }
+        lv_label_set_text(footer, "Auto-scaled; no map   ESC back");
+        lv_obj_set_style_text_color(footer, colors.text, 0);
+        lv_obj_align(footer, LV_ALIGN_BOTTOM_MID, 0, -6);
     }
 
     void start_flashlight() {
@@ -3375,6 +7021,17 @@ private:
         if (long_pressed) {
             return true;
         }
+        if (text_tool_mode_ == TextToolMode::Https && https_confirm_) {
+            if (key == LV_KEY_ENTER) {
+                const std::string host = text_tool_buffer_;
+                cancel_text_tool();
+                start_network_query(host, false, true);
+            } else if (key == LV_KEY_ESC || key == LV_KEY_BACKSPACE) {
+                https_confirm_ = false;
+                show_text_tool_prompt();
+            }
+            return true;
+        }
         if (key == LV_KEY_ESC) {
             cancel_text_tool();
             return true;
@@ -3424,6 +7081,43 @@ private:
                 return true;
             }
 
+            if (text_tool_mode_ == TextToolMode::Adsb) {
+                const auto frame = platform::decode_adsb_frame(text_tool_buffer_);
+                if (!frame.error.empty()) {
+                    show_text_tool_prompt(view::widgets::ToastTone::Error, frame.error);
+                    return true;
+                }
+                std::string message = "DF17: " + frame.aircraft_address +
+                                      "  TC " + std::to_string(frame.type_code);
+                if (!frame.callsign.empty()) message += "\nCallsign: " + frame.callsign;
+                message += adsb_category_text(frame);
+                if (frame.altitude_available) message += "\nBaro: " + std::to_string(frame.altitude_feet) + " ft";
+                message += adsb_velocity_text(frame);
+                message += adsb_status_text(frame);
+                message += "\nCRC OK; identity unverified";
+                cancel_text_tool();
+                toast_->show(message, view::widgets::ToastTone::Default, 9000);
+                return true;
+            }
+
+            if (text_tool_mode_ == TextToolMode::Https) {
+                if (!platform::valid_https_host(text_tool_buffer_)) {
+                    show_text_tool_prompt(view::widgets::ToastTone::Error,
+                                          "Invalid host; max 44 chars");
+                    return true;
+                }
+                https_confirm_ = true;
+                std::string target = text_tool_buffer_.substr(0, 22);
+                if (text_tool_buffer_.size() > 22)
+                    target += "\n" + text_tool_buffer_.substr(22);
+                toast_->show_persistent("HTTPS HEAD to:\n" + target +
+                    "\nDNS and request may be sent\nENTER send  ESC edit");
+                return true;
+            }
+            if (text_tool_mode_ != TextToolMode::Ping && text_tool_mode_ != TextToolMode::Dns) {
+                show_text_tool_prompt(view::widgets::ToastTone::Error, "Unsupported input mode");
+                return true;
+            }
             const bool dns = text_tool_mode_ == TextToolMode::Dns;
             const std::string host = text_tool_buffer_;
             cancel_text_tool();
@@ -3447,15 +7141,20 @@ private:
         const bool network_input =
             (key >= '0' && key <= '9') || (key >= 'a' && key <= 'z') ||
             (key >= 'A' && key <= 'Z') || key == '.' || key == '-';
+        const bool adsb_input = (key >= '0' && key <= '9') ||
+                                (key >= 'a' && key <= 'f') || (key >= 'A' && key <= 'F');
         const bool allowed =
             text_tool_mode_ == TextToolMode::Calculator
                 ? calculator_input
-                : text_tool_mode_ == TextToolMode::Morse ? morse_input : network_input;
+                : text_tool_mode_ == TextToolMode::Morse ? morse_input
+                : text_tool_mode_ == TextToolMode::Adsb ? adsb_input : network_input;
         if (allowed) {
             const std::size_t limit =
                 text_tool_mode_ == TextToolMode::Calculator
                     ? 64
-                    : text_tool_mode_ == TextToolMode::Morse ? 48 : 253;
+                    : text_tool_mode_ == TextToolMode::Morse ? 48
+                    : text_tool_mode_ == TextToolMode::Adsb ? 28
+                    : text_tool_mode_ == TextToolMode::Https ? 44 : 253;
             if (text_tool_buffer_.size() >= limit) {
                 show_text_tool_prompt(view::widgets::ToastTone::Warning,
                                       "Input limit reached");
@@ -3485,7 +7184,9 @@ private:
             if (!long_pressed && key == LV_KEY_ESC) {
                 gallery_task_->cancelled = true;
                 gallery_loading_ = false;
-                if (gallery_task_->camera) {
+                if (gallery_task_->survey_map) {
+                    show_survey();
+                } else if (gallery_task_->camera) {
                     toast_->hide();
                 } else {
                     show_file_browser();
@@ -3499,6 +7200,31 @@ private:
             } else if (!long_pressed && key == LV_KEY_ESC) {
                 camera_confirm_ = false;
                 toast_->hide();
+            }
+            return true;
+        }
+        if (visual_tool_mode_ == VisualToolMode::SurveyMap) {
+            if (!long_pressed && (key == LV_KEY_ESC || key == LV_KEY_BACKSPACE)) {
+                close_visual_tool();
+                show_survey();
+            } else if (!long_pressed &&
+                       ((key == LV_KEY_LEFT || key == 'z') && survey_map_zoom_ > 0)) {
+                const auto zoom = survey_map_zoom_ - 1;
+                close_visual_tool();
+                start_survey_map(zoom);
+            } else if (!long_pressed &&
+                       ((key == LV_KEY_RIGHT || key == 'c') && survey_map_zoom_ < 18)) {
+                const auto zoom = survey_map_zoom_ + 1;
+                close_visual_tool();
+                start_survey_map(zoom);
+            }
+            return true;
+        }
+        if (visual_tool_mode_ == VisualToolMode::SurveyPlot ||
+            visual_tool_mode_ == VisualToolMode::SurveyQr) {
+            if (!long_pressed && (key == LV_KEY_ESC || key == LV_KEY_BACKSPACE)) {
+                close_visual_tool();
+                show_survey();
             }
             return true;
         }
@@ -3526,6 +7252,9 @@ private:
         if (microphone_active_) {
             return handle_microphone_key(key, long_pressed);
         }
+        if (script_stage_ != ScriptStage::None) {
+            return handle_script_key(key, long_pressed);
+        }
         if (file_browser_active_) {
             return handle_file_browser_key(key, long_pressed);
         }
@@ -3535,8 +7264,71 @@ private:
         if (arp_active_) {
             return handle_arp_key(key, long_pressed);
         }
+        if (lab_listener_stage_ != LabListenerStage::None) {
+            return handle_lab_listener_key(key, long_pressed);
+        }
+        if (wireless_event_stage_ != WirelessEventStage::None) {
+            return handle_wireless_event_key(key, long_pressed);
+        }
+        if (surveillance_stage_ != SurveillanceStage::None && key != platform::kKeyPrintScreen) {
+            return handle_surveillance_key(key, long_pressed);
+        }
+        if (lab_confirm_active_) {
+            if (!long_pressed && key == LV_KEY_ENTER) {
+                lab_confirm_active_ = false;
+                view_model_.set_authorized_lab_mode(true);
+                toast_->show("Lab mode on for this session\nUnavailable tools remain disabled",
+                             view::widgets::ToastTone::Warning, 4200);
+            } else if (!long_pressed && (key == LV_KEY_ESC || key == LV_KEY_BACKSPACE)) {
+                lab_confirm_active_ = false;
+                toast_->hide();
+            }
+            return true;
+        }
+        if (wifi_monitor_confirm_) {
+            if (!long_pressed && key == LV_KEY_ENTER) {
+                wifi_monitor_confirm_ = false;
+                wifi_monitor_active_ = true;
+                wifi_monitor_has_baseline_ = false;
+                wifi_monitor_compared_ = false;
+                wifi_monitor_details_ = false;
+                wifi_monitor_baseline_ = {};
+                wifi_monitor_comparison_ = {};
+                start_wifi_scan();
+            } else if (!long_pressed && (key == LV_KEY_ESC || key == LV_KEY_BACKSPACE)) {
+                wifi_monitor_confirm_ = false;
+                toast_->hide();
+            }
+            return true;
+        }
+        if (adsb_receiver_active_ && key != platform::kKeyPrintScreen) {
+            return handle_adsb_receiver_key(key, long_pressed);
+        }
+        if (readiness_active_ && key != platform::kKeyPrintScreen) {
+            return handle_readiness_key(key, long_pressed);
+        }
+        if (note_stage_ != NoteStage::None && key != platform::kKeyPrintScreen) {
+            return handle_field_notes_key(key, long_pressed);
+        }
+        if (incident_checklist_active_) {
+            return handle_incident_checklist_key(key, long_pressed);
+        }
+        if (security_log_stage_ != SecurityLogStage::None && key != platform::kKeyPrintScreen) {
+            return handle_security_logs_key(key, long_pressed);
+        }
         if (port_stage_ != PortStage::None && key != platform::kKeyPrintScreen) {
             return handle_port_key(key, long_pressed);
+        }
+        if (ap_signal_test_active_ && key != platform::kKeyPrintScreen) {
+            return handle_ap_signal_test_key(key, long_pressed);
+        }
+        if (survey_stage_ != SurveyStage::None && key != platform::kKeyPrintScreen) {
+            if (visual_tool_mode_ == VisualToolMode::SurveyPlot ||
+                visual_tool_mode_ == VisualToolMode::SurveyMap ||
+                visual_tool_mode_ == VisualToolMode::SurveyQr) {
+                return handle_visual_tool_key(key, long_pressed);
+            }
+            return handle_survey_key(key, long_pressed);
         }
         if (wifi_active_) {
             return handle_wifi_key(key, long_pressed);
@@ -3575,6 +7367,15 @@ private:
         else if (text_tool_mode_ != TextToolMode::None &&
                  key != platform::kKeyPrintScreen) {
             return handle_text_tool_key(key, long_pressed);
+        }
+
+        if (favorites_active_) return handle_favorites_key(key, long_pressed);
+        if (key == '0' && !long_pressed) {
+            favorites_active_ = true;
+            favorite_selection_ = 0;
+            favorite_notice_.clear();
+            show_favorites();
+            return true;
         }
 
         if (view_model_.current_page() == model::AppPage::Apple) {
@@ -3739,6 +7540,33 @@ private:
                             case 16:
                                 start_sound_picker();
                                 break;
+                            case 17:
+                                start_file_browser(FileMode::Scripts);
+                                break;
+                            case 18:
+                                incident_checklist_active_ = true;
+                                field_guide_active_ = false;
+                                incident_checklist_page_ = 0;
+                                show_incident_checklist();
+                                break;
+                            case 19:
+                                start_security_log_history_action(SecurityLogAction::List);
+                                break;
+                            case 20:
+                                start_text_tool(TextToolMode::Adsb);
+                                break;
+                            case 21:
+                                if (USE_DESKTOP) {
+                                    toast_->show("ADS-B receiver requires a device",
+                                                 view::widgets::ToastTone::Warning, 3200);
+                                } else {
+                                    adsb_receiver_active_ = true;
+                                    adsb_receiver_confirm_ = true;
+                                    adsb_receiver_record_ = false;
+                                    adsb_receiver_gps_ = false;
+                                    show_adsb_receiver();
+                                }
+                                break;
                             default:
                                 break;
                         }
@@ -3749,6 +7577,21 @@ private:
                             start_theme_picker();
                         } else if (view_model_.tool_selection() == 9) {
                             toggle_clock_format();
+                        } else if (view_model_.tool_selection() == 10) {
+                            if (view_model_.authorized_lab_mode()) {
+                                view_model_.set_authorized_lab_mode(false);
+                                toast_->show("Authorized lab mode off",
+                                             view::widgets::ToastTone::Default, 3200);
+                            } else {
+                                lab_confirm_active_ = true;
+                                toast_->show_persistent(
+                                    "Authorized lab only\nCheck for nearby devices.\n"
+                                    "Radio may reach beyond lab.\nENTER enable  ESC cancel",
+                                    view::widgets::ToastTone::Warning);
+                            }
+                        } else if (view_model_.tool_selection() == 11) {
+                            readiness_page_ = 0;
+                            start_readiness();
                         } else {
                             show_system_status(view_model_.tool_selection());
                         }
@@ -3781,17 +7624,41 @@ private:
                                 start_port_scan();
                                 break;
                             case 5:
-                                if (USE_DESKTOP) {
-                                    show_network_interfaces(true);
-                                } else {
-                                    show_system_status(3);
-                                }
+                                show_network_interfaces(true);
                                 break;
                             case 6:
                                 show_arp_table();
                                 break;
                             case 7:
                                 save_diagnostics();
+                                break;
+                            case 8:
+                                start_internet_check();
+                                break;
+                            case 9:
+                                start_port_scan(true);
+                                break;
+                            case 10:
+                                if (USE_DESKTOP) {
+                                    toast_->show("Lab listener requires a supported device",
+                                                 view::widgets::ToastTone::Warning, 3200);
+                                } else if (!view_model_.authorized_lab_mode()) {
+                                    toast_->show("Enable Authorized lab mode in System",
+                                                 view::widgets::ToastTone::Warning, 3200);
+                                } else {
+                                    lab_listener_address_.clear();
+                                    lab_listener_display_.clear();
+                                    lab_listener_stage_ = LabListenerStage::Address;
+                                    show_lab_listener();
+                                }
+                                break;
+                            case 11:
+                                if (USE_DESKTOP) {
+                                    toast_->show("HTTPS trust requires a supported device",
+                                                 view::widgets::ToastTone::Warning, 3200);
+                                } else {
+                                    start_text_tool(TextToolMode::Https);
+                                }
                                 break;
                             default:
                                 toast_->show("This network action is unavailable",
@@ -3805,6 +7672,82 @@ private:
                         const int32_t selection = view_model_.tool_selection();
                         if (selection == 0) {
                             start_wifi_scan();
+                            return true;
+                        }
+                        if (selection == 5 || selection == 12) {
+                            if (USE_DESKTOP) {
+                                toast_->show("Wireless monitor requires a supported device",
+                                             view::widgets::ToastTone::Warning, 3200);
+                            } else {
+                                const char* iface = std::getenv("POSEIDON_WIFI_MONITOR_INTERFACE");
+                                wireless_event_kind_ = selection == 5
+                                    ? platform::WirelessEventKind::Deauthentication
+                                    : platform::WirelessEventKind::ProbeRequest;
+                                wireless_event_interface_.clear();
+                                wireless_event_setup_error_.clear();
+                                if (iface && *iface) {
+                                    if (platform::valid_monitor_interface_name(iface))
+                                        wireless_event_interface_ = iface;
+                                    else
+                                        wireless_event_setup_error_ = "Invalid configured interface";
+                                }
+                                wireless_event_display_.clear();
+                                wireless_event_stage_ = WirelessEventStage::Interface;
+                                show_wireless_event_monitor();
+                            }
+                            return true;
+                        }
+                        if (selection == 9) {
+                            if (USE_DESKTOP) {
+                                toast_->show("AP signal test requires a supported device",
+                                             view::widgets::ToastTone::Warning, 3200);
+                            } else {
+                                start_ap_signal_test();
+                            }
+                            return true;
+                        }
+                        if (selection == 14) {
+                            if (USE_DESKTOP) {
+                                toast_->show("Channel survey requires a supported device",
+                                             view::widgets::ToastTone::Warning, 3200);
+                            } else {
+                                start_wifi_scan(true);
+                            }
+                            return true;
+                        }
+                        if (selection == 15) {
+                            survey_stage_ = SurveyStage::Home;
+                            show_survey();
+                            return true;
+                        }
+                        if (selection == 16) {
+                            start_wifi_scan();
+                            return true;
+                        }
+                        if (selection == 17) {
+                            if (USE_DESKTOP) {
+                                toast_->show("AP monitor requires a supported device",
+                                             view::widgets::ToastTone::Warning, 3200);
+                            } else if (wifi_task_) {
+                                toast_->show("Previous Wi-Fi scan is stopping",
+                                             view::widgets::ToastTone::Warning, 3200);
+                            } else {
+                                wifi_monitor_confirm_ = true;
+                                toast_->show_persistent(
+                                    "AP monitor requests Wi-Fi scans.\n"
+                                    "Scans may transmit requests.\nENTER start  ESC cancel");
+                            }
+                            return true;
+                        }
+                        if (selection == 19) {
+                            if (USE_DESKTOP) {
+                                toast_->show("Camera hints require a supported device",
+                                             view::widgets::ToastTone::Warning, 3200);
+                            } else {
+                                surveillance_result_ = {};
+                                surveillance_stage_ = SurveillanceStage::Confirm;
+                                show_surveillance();
+                            }
                             return true;
                         }
                         if (selection < model::kWirelessReferenceItemCount) {
@@ -3825,6 +7768,16 @@ private:
                             case 3:
                                 start_gatt_scan();
                                 break;
+                            case 4:
+                                if (USE_DESKTOP) {
+                                    toast_->show("Tracker scan requires a supported device",
+                                                 view::widgets::ToastTone::Warning, 3200);
+                                } else {
+                                    gatt_tracker_mode_ = true;
+                                    gatt_stage_ = GattStage::ConfirmTracker;
+                                    show_gatt();
+                                }
+                                break;
                             case 5:
                                 start_wifi_scan();
                                 break;
@@ -3844,6 +7797,8 @@ private:
                                 ir_selection_ = 0;
                             }
                             start_ir_receive();
+                        } else if (view_model_.tool_selection() == 4) {
+                            show_ir_receiver_check();
                         } else {
                             show_feature_status(platform::infrared_features(),
                                                 view_model_.tool_selection());
@@ -3855,6 +7810,10 @@ private:
                             start_file_browser(FileMode::I2c);
                             return true;
                         }
+                        if (view_model_.tool_selection() == 2) {
+                            show_expansion_inventory();
+                            return true;
+                        }
 #if USE_DESKTOP
                         if (view_model_.tool_selection() == 7) {
                             usb_sim_active_ = true;
@@ -3862,6 +7821,11 @@ private:
                             usb_sim_confirm_ = false;
                             usb_sim_text_.clear();
                             show_usb_sim_prompt();
+                            return true;
+                        }
+#else
+                        if (view_model_.tool_selection() == 7) {
+                            show_cap_nfc_readiness();
                             return true;
                         }
 #endif
@@ -4032,6 +7996,7 @@ private:
     }
 
     viewmodel::BaseViewModel& view_model_;
+    AssetManager& assets_;
     ThemePersistence& theme_persistence_;
     BootSplash& boot_splash_;
     platform::UiSound ui_sound_;
@@ -4039,6 +8004,7 @@ private:
     std::unique_ptr<view::widgets::HelpPopup> help_popup_;
     std::string text_tool_buffer_;
     TextToolMode text_tool_mode_{TextToolMode::None};
+    bool https_confirm_{false};
     bool file_browser_active_{false};
     FileMode file_mode_{FileMode::Files};
     bool music_active_{false};
@@ -4062,8 +8028,18 @@ private:
     std::string file_notice_;
     std::shared_ptr<FileQueryState> file_task_;
     std::thread file_thread_;
+    std::shared_ptr<FileHashTask> file_hash_task_;
+    std::thread file_hash_thread_;
+    bool file_hash_showing_{false};
+    ScriptStage script_stage_{ScriptStage::None};
+    std::shared_ptr<ScriptTask> script_task_;
+    std::thread script_thread_;
+    platform::LocalScript script_;
+    std::string script_output_;
+    std::size_t script_page_{0};
     bool gallery_loading_{false};
     bool gallery_camera_{false};
+    uint32_t survey_map_zoom_{14};
     bool camera_confirm_{false};
     std::shared_ptr<GalleryQueryState> gallery_task_;
     std::thread gallery_thread_;
@@ -4077,6 +8053,7 @@ private:
     std::vector<platform::NetworkInterface> interfaces_;
     std::size_t interface_selection_{0};
     bool arp_active_{false};
+    bool arp_compare_active_{false};
     bool arp_truncated_{false};
     std::vector<platform::ArpEntry> arp_entries_;
     std::size_t arp_selection_{0};
@@ -4088,19 +8065,135 @@ private:
     std::thread port_thread_;
     std::string port_target_;
     std::string port_spec_;
+    std::string inventory_policy_text_;
     platform::PortTargets port_targets_;
     std::vector<uint16_t> port_ports_;
     platform::PortScanResult port_result_;
+    platform::NetworkInventory inventory_result_;
+    platform::NetworkInventory inventory_baseline_;
+    std::string inventory_baseline_name_;
+    std::string inventory_exclusions_;
+    std::string inventory_edit_buffer_;
+    std::vector<std::string> inventory_history_;
+    std::size_t inventory_history_selection_{0};
+    bool nmap_os_{false};
+    std::string nmap_detail_;
+    std::string inventory_detail_title_;
+    std::size_t nmap_detail_page_{0};
+    bool inventory_mode_{false};
     std::size_t port_selection_{0};
     bool port_tcp_{true};
     bool port_udp_{false};
     std::chrono::steady_clock::time_point port_next_update_{};
     std::shared_ptr<WifiTask> wifi_task_;
     std::thread wifi_thread_;
+    SurveyStage survey_stage_{SurveyStage::None};
+    bool survey_quality_{false};
+    std::unique_ptr<platform::SurveySession> survey_session_;
+    std::shared_ptr<SurveyFileTask> survey_file_task_;
+    std::thread survey_file_thread_;
+    std::vector<std::string> survey_files_;
+    platform::SurveyTimeline survey_timeline_;
+    std::size_t survey_timeline_selection_{0};
+    std::vector<std::size_t> survey_watch_indices_;
+    bool survey_watch_filter_{false};
+    std::size_t survey_selection_{0};
+    std::string survey_notice_;
+    std::chrono::steady_clock::time_point survey_next_update_{};
+    SurveillanceStage surveillance_stage_{SurveillanceStage::None};
+    std::shared_ptr<SurveillanceTask> surveillance_task_;
+    std::thread surveillance_thread_;
+    platform::SurveillanceScanResult surveillance_result_;
+    std::size_t surveillance_selection_{0};
     platform::WifiScanResult wifi_result_;
     std::size_t wifi_selection_{0};
     bool wifi_active_{false};
     bool wifi_scanning_{false};
+    bool wifi_channel_survey_active_{false};
+    bool wifi_monitor_confirm_{false};
+    bool wifi_monitor_active_{false};
+    bool wifi_monitor_has_baseline_{false};
+    bool wifi_monitor_compared_{false};
+    bool wifi_monitor_details_{false};
+    platform::WifiScanResult wifi_monitor_baseline_;
+    platform::WifiMonitorComparison wifi_monitor_comparison_;
+    std::string wifi_monitor_detail_;
+    std::size_t wifi_monitor_page_{0};
+    bool lab_confirm_active_{false};
+    LabListenerStage lab_listener_stage_{LabListenerStage::None};
+    std::unique_ptr<platform::LabHoneypot> lab_listener_;
+    std::string lab_listener_address_;
+    std::string lab_listener_display_;
+    bool lab_listener_stop_requested_{false};
+    bool lab_listener_log_info_{false};
+    bool lab_export_confirm_{false};
+    bool lab_delete_confirm_{false};
+    bool lab_log_deleted_{false};
+    std::shared_ptr<LabExportTask> lab_export_task_;
+    std::thread lab_export_thread_;
+    std::string lab_listener_notice_;
+    WirelessEventStage wireless_event_stage_{WirelessEventStage::None};
+    std::unique_ptr<platform::WirelessEventMonitor> wireless_event_monitor_;
+    platform::WirelessEventKind wireless_event_kind_{platform::WirelessEventKind::Deauthentication};
+    std::string wireless_event_interface_;
+    std::string wireless_event_channel_text_;
+    unsigned wireless_event_channel_{1};
+    std::string wireless_event_setup_error_;
+    std::string wireless_event_display_;
+    std::string wireless_event_notice_;
+    bool wireless_event_stop_requested_{false};
+    bool wireless_event_log_info_{false};
+    bool wireless_event_export_confirm_{false};
+    bool wireless_event_delete_confirm_{false};
+    bool wireless_event_log_deleted_{false};
+    SecurityLogStage security_log_stage_{SecurityLogStage::None};
+    std::shared_ptr<SecurityLogTask> security_log_task_;
+    std::thread security_log_thread_;
+    std::vector<platform::SecurityLogEntry> security_logs_;
+    std::vector<std::string> security_export_files_;
+    bool security_log_export_mode_{false};
+    std::size_t security_log_selection_{0};
+    std::string security_log_notice_;
+    bool incident_checklist_active_{false};
+    bool field_guide_active_{false};
+    std::size_t incident_checklist_page_{0};
+    SettingsBackupStage settings_backup_stage_{SettingsBackupStage::None};
+    std::shared_ptr<SettingsBackupTask> settings_backup_task_;
+    std::thread settings_backup_thread_;
+    std::string settings_backup_notice_;
+    NoteStage note_stage_{NoteStage::None};
+    NoteStage note_notice_return_{NoteStage::List};
+    std::shared_ptr<NoteTask> note_task_;
+    std::thread note_thread_;
+    std::vector<std::string> note_files_;
+    std::size_t note_selection_{0};
+    std::size_t note_page_{0};
+    std::string note_buffer_;
+    std::string note_notice_;
+    platform::FieldNote note_view_;
+    bool readiness_active_{false};
+    std::size_t readiness_page_{0};
+    platform::ReadinessReport readiness_report_;
+    std::string readiness_error_;
+    std::shared_ptr<ReadinessTask> readiness_task_;
+    std::thread readiness_thread_;
+    bool adsb_receiver_active_{false};
+    bool adsb_receiver_confirm_{false};
+    bool adsb_receiver_record_{false};
+    bool adsb_receiver_gps_{false};
+    bool adsb_receiver_stopping_{false};
+    bool adsb_aircraft_view_{false};
+    std::string adsb_aircraft_selected_;
+    bool favorites_active_{false};
+    std::size_t favorite_selection_{0};
+    std::string favorite_notice_;
+    bool accessory_profiles_active_{false};
+    std::size_t accessory_profile_selection_{0};
+    std::string accessory_profile_notice_;
+    std::string adsb_receiver_display_;
+    std::unique_ptr<platform::AdsbReceiver> adsb_receiver_;
+    bool ap_signal_test_active_{false};
+    std::vector<int> ap_signal_samples_;
     WifiStage wifi_stage_{WifiStage::Results};
     platform::WifiConnectMode wifi_connect_mode_{platform::WifiConnectMode::Saved};
     std::string wifi_password_;
@@ -4115,6 +8208,7 @@ private:
     std::shared_ptr<GattTask> gatt_task_;
     std::thread gatt_thread_;
     GattStage gatt_stage_{GattStage::None};
+    bool gatt_tracker_mode_{false};
     std::vector<platform::BluetoothDevice> gatt_devices_;
     std::vector<platform::GattEntry> gatt_entries_;
     std::size_t gatt_device_index_{0};

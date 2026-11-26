@@ -39,9 +39,25 @@ struct ArpResult {
 
 NetworkInterfacesResult list_network_interfaces();
 NetworkInterfacesResult filter_ethernet_interfaces(NetworkInterfacesResult interfaces);
+bool is_ethernet_interface_type(int type, bool wireless);
 std::vector<WifiNetwork> scan_wifi_networks();
 std::string ping_host(const std::string& host);
-std::string dns_lookup(const std::string& host);
+struct DnsLookupResult {
+    std::string output;
+    std::string error;
+};
+DnsLookupResult dns_lookup(const std::string& host);
+bool valid_https_host(const std::string& host);
+struct HttpsCheckResult {
+    bool verified{false};
+    std::string detail;
+};
+HttpsCheckResult check_https_certificate(const std::string& host);
+struct InternetCheckResult {
+    bool connected{false};
+    std::string detail;
+};
+InternetCheckResult check_internet();
 std::vector<std::string> scan_bluetooth_devices();
 std::string default_gateway();
 std::string parse_default_gateway(std::istream& routes);

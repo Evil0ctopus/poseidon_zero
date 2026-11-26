@@ -47,6 +47,8 @@ int main() {
     config.large_text = true;
     config.reduced_motion = true;
     config.screensaver_palette = 2;
+    config.favorites = {"6:ADS-B receiver", "3:Wardrive", "1:Hardware readiness"};
+    config.accessory_profiles = 21;
 
     std::string error;
     if (!app::save_application_config(temporary.path.string(), config, error)) {
@@ -66,8 +68,99 @@ int main() {
         loaded.large_text != config.large_text ||
         loaded.reduced_motion != config.reduced_motion ||
         loaded.screensaver_enabled != config.screensaver_enabled ||
-        loaded.screensaver_palette != config.screensaver_palette) {
+        loaded.screensaver_palette != config.screensaver_palette ||
+        loaded.favorites != config.favorites ||
+        loaded.accessory_profiles != config.accessory_profiles) {
         std::cerr << "Saved application settings did not round-trip\n";
+        return 1;
+    }
+
+    auto without_favorites = config;
+    without_favorites.favorites.clear();
+    app::ApplicationConfig reloaded;
+    if (!app::save_application_config(temporary.path.string(), without_favorites, error) ||
+        !app::load_application_config(temporary.path.string(), reloaded, error) ||
+        !reloaded.favorites.empty() || reloaded.theme_id != config.theme_id ||
+        reloaded.accessory_profiles != config.accessory_profiles ||
+        !app::save_application_config(temporary.path.string(), config, error)) {
+        std::cerr << "Removing favorites did not persist safely: " << error << '\n';
+        return 1;
+    }
+
+    const auto backup_directory = std::filesystem::temp_directory_path() /
+        ("poseidon-settings-backup-test-" + std::to_string(unique_part));
+    const auto backup = app::backup_application_settings(backup_directory, config);
+    if (!backup.error.empty()) {
+        std::cerr << "Could not back up settings: " << backup.error << '\n';
+        return 1;
+    }
+    app::ApplicationConfig restored;
+    if (!app::load_application_config(backup.path.string(), restored, error) ||
+        restored.theme_id != config.theme_id || !restored.theme_id_set ||
+        restored.dark_mode != config.dark_mode || restored.clock_24h != config.clock_24h ||
+        restored.spacious_layout != config.spacious_layout ||
+        restored.grid_layout != config.grid_layout ||
+        restored.screensaver_enabled != config.screensaver_enabled ||
+        restored.screensaver_style != config.screensaver_style ||
+        restored.sound_enabled != config.sound_enabled ||
+        restored.sound_volume != config.sound_volume ||
+        restored.large_text != config.large_text || restored.reduced_motion != config.reduced_motion ||
+        restored.screensaver_palette != config.screensaver_palette ||
+        restored.favorites != config.favorites ||
+        restored.accessory_profiles != config.accessory_profiles) {
+        std::cerr << "Settings backup did not round-trip\n";
+        return 1;
+    }
+    auto invalid_backup = config;
+    invalid_backup.sound_volume = 101;
+    if (app::backup_application_settings(backup_directory, invalid_backup).error.empty()) {
+        std::cerr << "Invalid settings backup accepted\n";
+        return 1;
+    }
+    invalid_backup = config;
+    invalid_backup.favorites.push_back(config.favorites.front());
+    if (app::backup_application_settings(backup_directory, invalid_backup).error.empty()) {
+        std::cerr << "Duplicate favorites accepted\n";
+        return 1;
+    }
+    invalid_backup = config;
+    invalid_backup.accessory_profiles = app::kAccessoryProfileMask + 1;
+    if (app::backup_application_settings(backup_directory, invalid_backup).error.empty()) {
+        std::cerr << "Invalid accessory profiles accepted\n";
+        return 1;
+    }
+    std::error_code cleanup_error;
+    const auto backup_link = backup_directory.parent_path() /
+        ("poseidon-settings-backup-link-" + std::to_string(unique_part));
+    std::filesystem::create_directory_symlink(backup_directory, backup_link, cleanup_error);
+    if (!cleanup_error) {
+        if (app::backup_application_settings(backup_link, config).error.empty()) {
+            std::cerr << "Settings backup followed a directory link\n";
+            return 1;
+        }
+        std::filesystem::remove(backup_link, cleanup_error);
+        if (cleanup_error) return 1;
+    }
+#if !defined(_WIN32)
+    else {
+        std::cerr << "Could not create settings backup directory link\n";
+        return 1;
+    }
+    std::filesystem::permissions(backup_directory, std::filesystem::perms::group_read,
+                                 std::filesystem::perm_options::add, cleanup_error);
+    if (cleanup_error || app::backup_application_settings(backup_directory, config).error.empty()) {
+        std::cerr << "Settings backup accepted a non-private directory\n";
+        return 1;
+    }
+    std::filesystem::permissions(backup_directory, std::filesystem::perms::group_read,
+                                 std::filesystem::perm_options::remove, cleanup_error);
+    if (cleanup_error) return 1;
+#else
+    cleanup_error.clear();
+#endif
+    std::filesystem::remove(backup.path, cleanup_error);
+    if (cleanup_error || !std::filesystem::remove(backup_directory, cleanup_error) || cleanup_error) {
+        std::cerr << "Settings backup cleanup failed\n";
         return 1;
     }
 
@@ -100,6 +193,10 @@ int main() {
     }
     if (legacy.sound_enabled || legacy.sound_volume != 50) {
         std::cerr << "Legacy configs should default to muted UI sounds\n";
+        return 1;
+    }
+    if (!legacy.favorites.empty() || legacy.accessory_profiles != 0) {
+        std::cerr << "Legacy configs should have no favorites or accessory profiles\n";
         return 1;
     }
 
@@ -135,6 +232,31 @@ int main() {
     if (app::load_application_config(temporary.path.string(), loaded, error)) {
         std::cerr << "Out-of-range screensaver palettes should be rejected\n";
         return 1;
+    }
+    for (const char* favorites : {"0:Unknown", "6:Name|", "6:Name|6:Name",
+                                  "1:A|1:B|1:C|1:D|1:E|1:F|1:G|1:H|1:I"}) {
+        {
+            std::ofstream output(temporary.path, std::ios::trunc);
+            output << "[application]\nfavorites=" << favorites << '\n';
+        }
+        app::ApplicationConfig invalid;
+        if (app::load_application_config(temporary.path.string(), invalid, error) ||
+            error.find("favorites") == std::string::npos) {
+            std::cerr << "Invalid favorites accepted: " << favorites << '\n';
+            return 1;
+        }
+    }
+    for (const char* profiles : {"32", "-1", "abc", ""}) {
+        {
+            std::ofstream output(temporary.path, std::ios::trunc);
+            output << "[application]\naccessory_profiles=" << profiles << '\n';
+        }
+        app::ApplicationConfig invalid;
+        if (app::load_application_config(temporary.path.string(), invalid, error) ||
+            error.find("accessory_profiles") == std::string::npos) {
+            std::cerr << "Invalid accessory profiles accepted: " << profiles << '\n';
+            return 1;
+        }
     }
     {
         std::ofstream output(temporary.path, std::ios::trunc);

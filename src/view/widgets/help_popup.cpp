@@ -34,7 +34,7 @@ constexpr std::array<HelpRow, 5> kMenuRows = {{
     {"Z / C", "Prev / next"},
     {"ENTER", "Open"},
     {"ESC", "Back"},
-    {"HELP", "Close help"},
+    {"0", "Favorites"},
 }};
 
 constexpr std::array<HelpRow, 5> kWirelessRows = {{

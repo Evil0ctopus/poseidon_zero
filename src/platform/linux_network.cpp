@@ -14,6 +14,14 @@
 #include <memory>
 #include <sstream>
 #include <string>
+#include <utility>
+
+#if !USE_DESKTOP
+#include <arpa/inet.h>
+#include <ifaddrs.h>
+#include <netinet/in.h>
+#include <sys/wait.h>
+#endif
 
 #if USE_DESKTOP && defined(_WIN32)
 #ifndef WIN32_LEAN_AND_MEAN
@@ -28,6 +36,40 @@
 #endif
 
 namespace platform {
+namespace {
+
+bool valid_host_argument(const std::string& host) {
+    if (host.empty() || host.size() > 253) return false;
+    std::size_t label_length = 0;
+    bool previous_hyphen = false;
+    for (const unsigned char character : host) {
+        if (character == '.') {
+            if (label_length == 0 || label_length > 63 || previous_hyphen) return false;
+            label_length = 0;
+            previous_hyphen = false;
+        } else if (character == '-') {
+            if (label_length == 0) return false;
+            ++label_length;
+            previous_hyphen = true;
+        } else if (std::isalnum(character)) {
+            ++label_length;
+            previous_hyphen = false;
+        } else {
+            return false;
+        }
+    }
+    return label_length > 0 && label_length <= 63 && !previous_hyphen;
+}
+
+} // namespace
+
+bool valid_https_host(const std::string& host) {
+    return host.size() <= 44 && valid_host_argument(host);
+}
+
+bool is_ethernet_interface_type(int type, bool wireless) {
+    return type == 1 && !wireless;
+}
 
 NetworkInterfacesResult filter_ethernet_interfaces(NetworkInterfacesResult interfaces) {
     auto& entries = interfaces.interfaces;
@@ -234,7 +276,16 @@ std::vector<WifiNetwork> scan_wifi_networks() {
     return {{"Emulator Wi-Fi", "WPA2", 75}};
 }
 std::string ping_host(const std::string&) { return "Desktop emulator: ping disabled"; }
-std::string dns_lookup(const std::string&) { return "Desktop emulator: DNS disabled"; }
+DnsLookupResult dns_lookup(const std::string&) {
+    return {{}, "Desktop emulator: DNS disabled"};
+}
+
+HttpsCheckResult check_https_certificate(const std::string&) {
+    return {false, "Desktop emulator: HTTPS disabled"};
+}
+InternetCheckResult check_internet() {
+    return {false, "Internet check unavailable on desktop"};
+}
 std::vector<std::string> scan_bluetooth_devices() { return {"Desktop emulator: no BLE data"}; }
 std::string default_gateway() {
 #if defined(_WIN32)
@@ -367,40 +418,6 @@ ArpResult arp_entries() {
 namespace platform {
 namespace {
 
-bool valid_host_argument(const std::string& host) {
-    if (host.empty() || host.size() > 253) {
-        return false;
-    }
-
-    std::size_t label_length = 0;
-    bool previous_hyphen = false;
-    for (std::size_t index = 0; index < host.size(); ++index) {
-        const unsigned char character = static_cast<unsigned char>(host[index]);
-        if (character == '.') {
-            if (label_length == 0 || label_length > 63 || previous_hyphen) {
-                return false;
-            }
-            label_length = 0;
-            previous_hyphen = false;
-        }
-        else if (character == '-') {
-            if (label_length == 0) {
-                return false;
-            }
-            ++label_length;
-            previous_hyphen = true;
-        }
-        else if (std::isalnum(character)) {
-            ++label_length;
-            previous_hyphen = false;
-        }
-        else {
-            return false;
-        }
-    }
-    return label_length > 0 && label_length <= 63 && !previous_hyphen;
-}
-
 std::string run_command(const char* command) {
     std::array<char, 256> buffer{};
     std::string output;
@@ -439,12 +456,39 @@ NetworkInterfacesResult list_network_interfaces() {
         int state = 0;
         interface.state_known = static_cast<bool>(carrier >> state);
         interface.connected = state == 1;
+        std::error_code wireless_error;
+        const bool wireless = std::filesystem::exists(entry.path() / "wireless", wireless_error);
+        std::ifstream type_file(entry.path() / "type");
+        int type = 0;
+        if (wireless_error || !(type_file >> type)) {
+            result.error = "Cannot determine interface type for " + interface.name;
+            result.interfaces.clear();
+            return result;
+        }
+        interface.ethernet = is_ethernet_interface_type(type, wireless);
         result.interfaces.push_back(std::move(interface));
     }
     if (error) {
         result.interfaces.clear();
         result.error = "Cannot list network interfaces: " + error.message();
     }
+    if (!result.error.empty()) return result;
+    ifaddrs* addresses = nullptr;
+    if (getifaddrs(&addresses) != 0) {
+        result.error = "Cannot read interface addresses";
+        result.interfaces.clear();
+        return result;
+    }
+    for (const ifaddrs* address = addresses; address; address = address->ifa_next) {
+        if (!address->ifa_addr || address->ifa_addr->sa_family != AF_INET) continue;
+        for (auto& interface : result.interfaces) {
+            if (interface.name != address->ifa_name || !interface.address.empty()) continue;
+            char text[INET_ADDRSTRLEN]{};
+            const auto* ipv4 = reinterpret_cast<const sockaddr_in*>(address->ifa_addr);
+            if (inet_ntop(AF_INET, &ipv4->sin_addr, text, sizeof(text))) interface.address = text;
+        }
+    }
+    freeifaddrs(addresses);
     return result;
 }
 
@@ -483,12 +527,93 @@ std::string ping_host(const std::string& host) {
     return run_command(command.c_str());
 }
 
-std::string dns_lookup(const std::string& host) {
+DnsLookupResult dns_lookup(const std::string& host) {
     if (!valid_host_argument(host)) {
-        return "Invalid host";
+        return {{}, "Invalid host"};
     }
     const std::string command = "timeout 5s getent ahosts \"" + host + "\" 2>&1";
-    return run_command(command.c_str());
+    FILE* pipe = popen(command.c_str(), "r");
+    if (!pipe) return {{}, "Cannot start system name lookup"};
+    std::array<char, 256> buffer{};
+    std::string output;
+    bool truncated = false;
+    while (std::fgets(buffer.data(), static_cast<int>(buffer.size()), pipe)) {
+        const auto count = std::strlen(buffer.data());
+        const auto available = 4096 - output.size();
+        output.append(buffer.data(), std::min(count, available));
+        if (count > available) truncated = true;
+    }
+    const bool read_failed = std::ferror(pipe) != 0;
+    const int status = pclose(pipe);
+    if (read_failed) return {{}, "Cannot read system name lookup output"};
+    if (status == -1 || !WIFEXITED(status))
+        return {{}, "System name lookup process failed"};
+    const int code = WEXITSTATUS(status);
+    if (code == 124) return {{}, "System name lookup timed out"};
+    if (code != 0)
+        return {{}, "System name lookup failed (exit " + std::to_string(code) + ")"};
+    if (truncated) return {{}, "System name lookup output exceeded limit"};
+    if (output.empty()) return {{}, "System name lookup returned no result"};
+    std::istringstream lines(output);
+    std::string first_address;
+    std::array<unsigned char, 16> address{};
+    if (!(lines >> first_address) ||
+        (inet_pton(AF_INET, first_address.c_str(), address.data()) != 1 &&
+         inet_pton(AF_INET6, first_address.c_str(), address.data()) != 1))
+        return {{}, "Invalid system name lookup output"};
+    return {std::move(output), {}};
+}
+
+HttpsCheckResult check_https_certificate(const std::string& host) {
+    if (!valid_https_host(host)) return {false, "Invalid HTTPS hostname"};
+    const std::string command =
+        "timeout 12s curl --disable --silent --show-error --noproxy '*' --proto '=https' "
+        "--connect-timeout 5 --max-time 10 --head --output /dev/null "
+        "--write-out '%{http_code}' \"https://" + host + "/\" 2>&1";
+    FILE* pipe = popen(command.c_str(), "r");
+    if (!pipe) return {false, "Cannot start HTTPS check"};
+    std::array<char, 256> buffer{};
+    std::string output;
+    bool truncated = false;
+    while (std::fgets(buffer.data(), static_cast<int>(buffer.size()), pipe)) {
+        const auto count = std::strlen(buffer.data());
+        const auto available = 512 - output.size();
+        output.append(buffer.data(), std::min(count, available));
+        if (count > available) truncated = true;
+    }
+    const bool read_failed = std::ferror(pipe) != 0;
+    const int status = pclose(pipe);
+    if (read_failed) return {false, "Cannot read HTTPS check output"};
+    if (status == -1 || !WIFEXITED(status)) return {false, "HTTPS check process failed"};
+    const int code = WEXITSTATUS(status);
+    if (code == 28 || code == 124) return {false, "HTTPS check timed out"};
+    if (code == 60) return {false, "TLS peer verification failed"};
+    if (code != 0) return {false, "HTTPS check failed (curl " + std::to_string(code) + ")"};
+    if (truncated || output.size() != 3 || output[0] < '1' || output[0] > '5' ||
+        output[1] < '0' || output[1] > '9' || output[2] < '0' || output[2] > '9')
+        return {false, "Invalid HTTPS check response"};
+    return {true, "TLS verified; HTTP " + output};
+}
+
+InternetCheckResult check_internet() {
+    constexpr const char* command =
+        "curl --disable --silent --show-error --noproxy '*' --connect-timeout 5 --max-time 10 "
+        "--output /dev/null --write-out '%{http_code}' "
+        "https://cp.cloudflare.com/generate_204 2>&1";
+    FILE* pipe = popen(command, "r");
+    if (!pipe) return {false, "Could not start HTTPS check"};
+    std::array<char, 256> buffer{};
+    std::string output;
+    while (fgets(buffer.data(), static_cast<int>(buffer.size()), pipe)) {
+        if (output.size() < 512) output.append(buffer.data(), std::min<std::size_t>(
+            std::strlen(buffer.data()), 512 - output.size()));
+    }
+    const int status = pclose(pipe);
+    if (status == -1 || !WIFEXITED(status)) return {false, "HTTPS check failed"};
+    if (WEXITSTATUS(status) != 0)
+        return {false, "HTTPS error (curl " + std::to_string(WEXITSTATUS(status)) + ")"};
+    if (output == "204") return {true, "Cloudflare HTTPS reachable"};
+    return {false, "Unexpected HTTP response: " + output};
 }
 
 std::vector<std::string> scan_bluetooth_devices() {

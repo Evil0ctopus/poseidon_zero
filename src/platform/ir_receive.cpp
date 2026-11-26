@@ -53,6 +53,10 @@ IrSaveResult save_ir_capture(const std::filesystem::path& directory,
 
 namespace platform {
 
+IrReceiverStatus inspect_ir_receiver() {
+    return {false, {}, "IR receiver diagnostics are unavailable in the desktop simulator"};
+}
+
 IrReceiveResult receive_ir(const std::atomic_bool& cancelled) {
     if (cancelled) return {};
     return {{}, false, "IR reception requires a supported device"};
@@ -90,12 +94,46 @@ public:
         fd_ = -1;
         return fd;
     }
+    void reset(int fd) {
+        if (fd_ >= 0) close(fd_);
+        fd_ = fd;
+    }
 private:
     int fd_;
 };
 
 std::string system_error(const std::string& action, int error) {
     return action + ": " + std::strerror(error);
+}
+
+bool open_raw_receiver(FileDescriptor& receiver, std::string& path,
+                       std::string& error, const std::atomic_bool& cancelled) {
+    std::string open_error;
+    for (int index = 0; index < 64 && !cancelled; ++index) {
+        const auto candidate_path = "/dev/lirc" + std::to_string(index);
+        const int fd = open(candidate_path.c_str(), O_RDONLY | O_NONBLOCK | O_CLOEXEC);
+        if (fd < 0) {
+            if (errno != ENOENT && open_error.empty()) {
+                open_error = system_error(candidate_path, errno);
+            }
+            continue;
+        }
+        FileDescriptor candidate(fd);
+        uint32_t features = 0;
+        const int feature_result = ioctl(candidate.get(), LIRC_GET_FEATURES, &features);
+        if (feature_result == 0 && (features & LIRC_CAN_REC_MODE2) != 0) {
+            path = candidate_path;
+            receiver.reset(candidate.release());
+            return true;
+        }
+        if (feature_result < 0 && open_error.empty()) {
+            open_error = system_error(candidate_path + " capabilities", errno);
+        }
+    }
+    if (!cancelled) {
+        error = open_error.empty() ? "No raw IR receiver found" : open_error;
+    }
+    return false;
 }
 
 IrReceiveResult read_ir_data(int fd, const std::atomic_bool& cancelled,
@@ -154,34 +192,24 @@ IrReceiveResult read_ir_data(int fd, const std::atomic_bool& cancelled,
 
 } // namespace
 
+IrReceiverStatus inspect_ir_receiver() {
+    const std::atomic_bool not_cancelled{false};
+    FileDescriptor receiver(-1);
+    IrReceiverStatus status;
+    status.available = open_raw_receiver(receiver, status.device_path, status.error,
+                                         not_cancelled);
+    return status;
+}
+
 IrReceiveResult receive_ir(const std::atomic_bool& cancelled) {
     IrReceiveResult result;
-    std::string open_error;
-    int receiver = -1;
-    for (int index = 0; index < 64 && !cancelled; ++index) {
-        const auto path = "/dev/lirc" + std::to_string(index);
-        const int fd = open(path.c_str(), O_RDONLY | O_NONBLOCK | O_CLOEXEC);
-        if (fd < 0) {
-            if (errno != ENOENT && open_error.empty()) open_error = system_error(path, errno);
-            continue;
-        }
-        FileDescriptor candidate(fd);
-        uint32_t features = 0;
-        const int feature_result = ioctl(candidate.get(), LIRC_GET_FEATURES, &features);
-        if (feature_result == 0 && (features & LIRC_CAN_REC_MODE2) != 0) {
-            receiver = candidate.release();
-            break;
-        }
-        if (feature_result < 0 && open_error.empty()) {
-            open_error = system_error(path + " capabilities", errno);
-        }
-    }
-    FileDescriptor device(receiver);
-    if (cancelled) return {};
-    if (receiver < 0) {
-        result.error = open_error.empty() ? "No raw IR receiver found" : open_error;
+    FileDescriptor device(-1);
+    std::string path;
+    if (!open_raw_receiver(device, path, result.error, cancelled)) {
+        if (cancelled) return {};
         return result;
     }
+    if (cancelled) return {};
     uint32_t mode = LIRC_MODE_MODE2;
     if (ioctl(device.get(), LIRC_SET_REC_MODE, &mode) < 0) {
         result.error = system_error("IR receive mode", errno);

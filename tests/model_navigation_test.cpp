@@ -4,6 +4,17 @@
 
 int main() {
     model::BaseModel model;
+    if (model.authorized_lab_mode()) {
+        std::cerr << "Authorized lab mode must start disabled\n";
+        return 1;
+    }
+    model.set_authorized_lab_mode(true);
+    model::BaseModel restarted;
+    if (!model.authorized_lab_mode() || restarted.authorized_lab_mode()) {
+        std::cerr << "Authorized lab mode must be session-only\n";
+        return 1;
+    }
+    model.set_authorized_lab_mode(false);
     if (model.screensaver_due(model::kScreensaverIdleMs)) {
         std::cerr << "Screensaver should be disabled by default\n";
         return 1;
@@ -76,22 +87,32 @@ int main() {
     }
 
     model.set_current_page(model::AppPage::Network);
-    if (model.tool_selection() != model::kStandardToolItemCount - 1) {
-        std::cerr << "Switching to a standard page should clamp its selection\n";
+    if (model.tool_selection() != model::kNetworkToolItemCount - 1) {
+        std::cerr << "Switching to Network should clamp its selection\n";
         return 1;
     }
 
     model.set_current_page(model::AppPage::Wireless);
     if (model::wireless_reference_shortcut('s') != 0 ||
         model::wireless_reference_shortcut('S') != 0 ||
+        model::wireless_reference_shortcut('t') != 9 ||
+        model::wireless_reference_shortcut('g') != 14 ||
+        model::wireless_reference_shortcut('n') != 16 ||
+        model::wireless_reference_shortcut('v') != model::kWirelessReferenceItemCount - 1 ||
         model::wireless_reference_shortcut('c') != -1 ||
         model::wireless_reference_shortcut('x') != -1 ||
         model::wireless_reference_shortcut('z') != -1 ||
         model::wireless_reference_shortcut('C') != 6 ||
         model::wireless_reference_shortcut('X') != 4 ||
-        model::wireless_reference_shortcut('Z') != 20 ||
+        model::wireless_reference_shortcut('Z') != -1 ||
         model::wireless_reference_shortcut('!') != -1) {
         std::cerr << "Wireless shortcuts must preserve navigation keys and find reference items\n";
+        return 1;
+    }
+    model.set_tool_selection(model::wireless_reference_shortcut('v'));
+    model.move_tool_selection(1);
+    if (model.tool_selection() != model::kWirelessReferenceItemCount) {
+        std::cerr << "Wireless navigation should reach the first device tool after the last reference\n";
         return 1;
     }
     model.set_tool_selection(model::kWirelessToolItemCount + 1);
@@ -100,8 +121,8 @@ int main() {
         return 1;
     }
     model.set_current_page(model::AppPage::Network);
-    if (model.tool_selection() != model::kStandardToolItemCount - 1) {
-        std::cerr << "Leaving Wireless should clamp to the standard page range\n";
+    if (model.tool_selection() != model::kNetworkToolItemCount - 1) {
+        std::cerr << "Leaving Wireless should clamp to the Network page range\n";
         return 1;
     }
 
@@ -119,8 +140,8 @@ int main() {
     }
 
     model.set_current_page(model::AppPage::Network);
-    if (model.tool_selection() != model::kStandardToolItemCount - 1) {
-        std::cerr << "Switching from System should clamp to the standard page range\n";
+    if (model.tool_selection() != model::kNetworkToolItemCount - 1) {
+        std::cerr << "Switching from System should clamp to the Network page range\n";
         return 1;
     }
 

@@ -51,6 +51,8 @@ public:
     bool screensaver_due(uint32_t inactive_ms) const;
     bool grid_layout() const;
     void set_grid_layout(bool enabled);
+    bool authorized_lab_mode() const;
+    void set_authorized_lab_mode(bool enabled);
 
     model::AppPage current_page() const;
     void show_apple_page();

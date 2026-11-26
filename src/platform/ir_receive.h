@@ -19,12 +19,19 @@ struct IrReceiveResult {
     std::string error;
 };
 
+struct IrReceiverStatus {
+    bool available{false};
+    std::string device_path;
+    std::string error;
+};
+
 enum class IrSampleStatus {
     Continue,
     Complete,
     Overflow,
 };
 
+IrReceiverStatus inspect_ir_receiver();
 IrSampleStatus append_ir_sample(IrReceiveResult& result, uint32_t value);
 IrReceiveResult receive_ir(const std::atomic_bool& cancelled);
 

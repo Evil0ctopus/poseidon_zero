@@ -156,6 +156,14 @@ void BaseViewModel::set_grid_layout(bool enabled) {
     grid_layout_subject_.set(enabled);
 }
 
+bool BaseViewModel::authorized_lab_mode() const {
+    return model_.authorized_lab_mode();
+}
+
+void BaseViewModel::set_authorized_lab_mode(bool enabled) {
+    model_.set_authorized_lab_mode(enabled);
+}
+
 model::AppPage BaseViewModel::current_page() const {
     return model_.current_page();
 }
