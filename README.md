@@ -246,8 +246,8 @@ and the Zero tools. The position counter is relative to the selected section, an
 description appears beneath the WiFi list.
 **Infrared → IR receive** listens for one raw signal for up to 15 seconds and shows pulse and
 space durations. It does not transmit or save the signal. A compatible LIRC receiver and permission
-to read it are required; the desktop simulator reports reception as unsupported. The store's
-`additional_hardware` permission mapping must be confirmed before publishing this feature.
+to read it are required; the desktop simulator reports reception as unsupported. The store listing
+declares `additional_hardware` for optional accessories.
 **Infrared → Receiver check** verifies that the device exposes a raw LIRC receiver without capturing
 or transmitting a signal. It reports the receiver device path when available; the desktop simulator
 reports the check as unsupported.
@@ -287,8 +287,7 @@ The original camera JPEG may contain camera metadata. This is not a live preview
 accessible camera and
 the camera utility are required; the desktop simulator reports it as unsupported. Physical
 capture and JPEG saving have been tested through the backend on the connected CardputerZero; the
-on-device viewer and save controls still need verification. Publishing requires the store camera
-permission.
+on-device viewer and save controls still need verification. The store listing declares camera use.
 **Media → Music** browses local files and plays a selected regular WAV, MP3, or FLAC file at 50% volume;
 press `ESC` to stop and return to the browser. Audio-device and decoding errors are shown.
 **Media → Piano** plays short generated tones with `A S D F G H J K` (C4 through C5);
@@ -298,7 +297,7 @@ press `ESC` to exit. Playback errors are shown; this is a simple tone keyboard, 
 Filenames are lowercase; embedded track artwork is not supported. The Gallery image limits apply.
 **Media → Microphone** asks for confirmation before listening for five seconds and shows the peak
 level. It does not record or save audio; `ESC` cancels. An accessible microphone is required, and
-the app-store microphone permission must be configured before this feature is published. A
+the store listing declares microphone use. A
 five-second backend test received samples on the connected device; the UI remains unverified.
 **Media → Recorder** asks before recording five seconds in memory. Press `ENTER` afterward to save
 a mono 16 kHz WAV file in `~/poseidon-recordings`, or `ESC` to discard it. Saving creates a new file
@@ -1248,7 +1247,8 @@ installing; directories and the executable should be `755`, and data files `644`
 3. Review the package checks, then complete the listing: unique app name, summary, category,
    author name, SPDX license, an available four-character share code, declared permissions, icon,
    and 1–6 screenshots at 320×170. A public source repository is optional but can prefill the
-   listing from this repository's `app-builder.json`.
+   listing from this repository's `app-builder.json`. The included dark and light screenshots
+   are simulator captures of the current main menu.
 4. Submit the package. The portal creates a review pull request. For a first-time submission,
    include a short demo video in that pull request. After it is merged, the store index may take a
    few minutes to update. The first uploader owns the package name; later package releases must

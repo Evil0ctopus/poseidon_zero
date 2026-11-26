@@ -1,12 +1,13 @@
 {
   "app_name": "POSEIDON-Zero",
   "package_name": "poseidon-zero",
+  "bin_name": "poseidon_zero",
   "version": "0.7.0",
-  "description": "Keyboard-first system diagnostics and local utilities for CardputerZero",
+  "description": "Keyboard-first diagnostics and field tools for CardputerZero",
 
   "store": {
-    "summary": "Keyboard-first system diagnostics and local utilities for CardputerZero",
-    "description": "POSEIDON-Zero provides a compact interface to CardputerZero system status, local utilities, and network information.",
+    "summary": "Keyboard-first diagnostics and field tools for CardputerZero",
+    "description": "POSEIDON-Zero offers system diagnostics, authorized network tools, GPS-tagged wireless surveys, and receive-only utilities. Optional camera, microphone, and accessory features require compatible hardware and permissions. Some capabilities remain unverified or unavailable.",
     "categories": ["System Tools"],
     "screenshots": [
       "screenshot/poseidon-zero-dark-320x170.png",
@@ -18,11 +19,11 @@
     "author": { "github": "Evil0ctopus", "display_name": "Evil0ctopus" },
     "share_code": "POSE",
     "permissions": {
-      "camera": false,
-      "microphone": false,
+      "camera": true,
+      "microphone": true,
       "imu": false,
       "network": true,
-      "additional_hardware": false,
+      "additional_hardware": true,
       "background_service": false,
       "external_display": false
     }
